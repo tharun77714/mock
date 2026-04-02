@@ -42,6 +42,20 @@ Open http://localhost:8000 — you should see:
 | Port 8000 in use | `netstat -ano \| findstr 8000` then `taskkill /PID <id> /F` |
 | MongoDB error | Whitelist your IP in MongoDB Atlas → Network Access |
 | Gemini error | Check your API key in `.env.local` (do not commit it) |
+| Video not visible on another PC | Add **`SUPABASE_SERVICE_ROLE_KEY`** to `web/.env.local` and create Storage bucket **`interviews`** (see `ARCHITECTURE.md`) |
+
+---
+
+## Supabase (interview video + audio in the cloud)
+
+1. In [Supabase](https://supabase.com) → **Storage** → create bucket **`interviews`** (or set `SUPABASE_INTERVIEWS_BUCKET`).
+2. For simple playback in the app, set the bucket to **public** (or use signed URLs later).
+3. In **Project Settings → API**, copy **`service_role`** (secret) into **`web/.env.local`** as:
+   - `SUPABASE_SERVICE_ROLE_KEY=...`  
+   **Never** put this key in `NEXT_PUBLIC_*` or client code.
+4. Restart Next.js and FastAPI after editing env. Python reads the same `web/.env.local` via `python-dotenv`.
+
+See **`ARCHITECTURE.md`** for the full pipeline (Next → Storage → MongoDB → FastAPI).
 
 ---
 

@@ -1,4 +1,15 @@
 import os
+from pathlib import Path
+
+try:
+    from dotenv import load_dotenv
+
+    _repo_root = Path(__file__).resolve().parent.parent
+    load_dotenv(_repo_root / "web" / ".env.local")
+    load_dotenv(_repo_root / ".env.local")
+except ImportError:
+    pass
+
 import io
 import json
 import re
@@ -51,8 +62,8 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 # Gemini Setup
 # ---------------------------------------------------------------------------
-GEMINI_API_KEY = os.environ.get("GOOGLE_GENERATIVE_AI_API_KEY", "AIzaSyCIqbLIc1NfrYm_gkP_raNL44n_IqYdeok")
-gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+GEMINI_API_KEY = os.environ.get("GOOGLE_GENERATIVE_AI_API_KEY", "")
+gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
 # ---------------------------------------------------------------------------
 # Device
@@ -210,10 +221,81 @@ FILLER_WORDS = {
 }
 
 
+def _is_http_url(s: str) -> bool:
+    s = (s or "").strip()
+    return s.startswith("http://") or s.startswith("https://")
+
+
+def download_video_to_temp(url: str) -> Optional[str]:
+    import requests
+
+    try:
+        r = requests.get(url, timeout=180, stream=True)
+        r.raise_for_status()
+        suffix = ".webm"
+        if ".mp4" in url.lower():
+            suffix = ".mp4"
+        tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+        for chunk in r.iter_content(chunk_size=1024 * 1024):
+            if chunk:
+                tmp.write(chunk)
+        tmp.close()
+        return tmp.name
+    except Exception as e:
+        print(f"[Video Download] {e}")
+        return None
+
+
+def resolve_local_video_path(video_path: str) -> tuple[Optional[str], Optional[str]]:
+    """Return (local_path, temp_path_to_delete)."""
+    if not video_path or not video_path.strip():
+        return None, None
+    if os.path.exists(video_path):
+        return video_path, None
+    if _is_http_url(video_path):
+        p = download_video_to_temp(video_path)
+        if p:
+            return p, p
+    return None, None
+
+
+def upload_extracted_audio_to_supabase(
+    local_wav_path: str, user_id: str, interview_id: str
+) -> Optional[str]:
+    url = os.environ.get("SUPABASE_URL") or os.environ.get("NEXT_PUBLIC_SUPABASE_URL")
+    key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+    if not url or not key or not os.path.isfile(local_wav_path):
+        return None
+    bucket = os.environ.get("SUPABASE_INTERVIEWS_BUCKET", "interviews")
+    safe_uid = "".join(c if c.isalnum() or c in "._-" else "_" for c in user_id)[:200]
+    obj = f"audio/{safe_uid}/{interview_id}.wav"
+    try:
+        from supabase import create_client
+
+        client = create_client(url, key)
+        with open(local_wav_path, "rb") as f:
+            data = f.read()
+        client.storage.from_(bucket).upload(
+            obj,
+            data,
+            file_options={"content-type": "audio/wav", "upsert": "true"},
+        )
+        pub = client.storage.from_(bucket).get_public_url(obj)
+        if isinstance(pub, str):
+            return pub
+        if isinstance(pub, dict):
+            return pub.get("publicUrl")
+        return getattr(pub, "publicUrl", None) or (str(pub) if pub else None)
+    except Exception as e:
+        print(f"[Supabase audio upload] {e}")
+        return None
+
+
 class ProcessRequest(BaseModel):
-    video_path: str
+    video_path: str = ""
     interview_id: str
     transcript: Optional[str] = None
+    user_id: Optional[str] = None
 
 
 @app.get("/")
@@ -457,18 +539,19 @@ Rules:
 Example format: ["suggestion 1", "suggestion 2", "suggestion 3"]"""
 
     try:
-        response = gemini_client.models.generate_content(
-            model="gemini-1.5-flash",
-            contents=prompt,
-        )
-        text = response.text.strip()
-        # Parse JSON array from response
-        start = text.find('[')
-        end = text.rfind(']') + 1
-        if start != -1 and end > start:
-            suggestions = json.loads(text[start:end])
-            if isinstance(suggestions, list):
-                return [str(s) for s in suggestions[:3]]
+        if gemini_client:
+            response = gemini_client.models.generate_content(
+                model="gemini-1.5-flash",
+                contents=prompt,
+            )
+            text = response.text.strip()
+            # Parse JSON array from response
+            start = text.find('[')
+            end = text.rfind(']') + 1
+            if start != -1 and end > start:
+                suggestions = json.loads(text[start:end])
+                if isinstance(suggestions, list):
+                    return [str(s) for s in suggestions[:3]]
     except Exception as e:
         print(f"[Gemini] Error: {e}")
 
@@ -540,19 +623,20 @@ Be specific — quote exact phrases from the candidate's answers when pointing o
 No markdown, only raw JSON."""
 
     try:
-        response = gemini_client.models.generate_content(
-            model="gemini-1.5-flash",
-            contents=prompt,
-        )
-        text = response.text.strip()
-        # Parse JSON
-        start = text.find('{')
-        end = text.rfind('}') + 1
-        if start != -1 and end > start:
-            coaching = json.loads(text[start:end])
-            print(f"[Gemini Transcript] English level: {coaching.get('english_level')} "
-                  f"score: {coaching.get('overall_language_score')}")
-            return coaching
+        if gemini_client:
+            response = gemini_client.models.generate_content(
+                model="gemini-1.5-flash",
+                contents=prompt,
+            )
+            text = response.text.strip()
+            # Parse JSON
+            start = text.find('{')
+            end = text.rfind('}') + 1
+            if start != -1 and end > start:
+                coaching = json.loads(text[start:end])
+                print(f"[Gemini Transcript] English level: {coaching.get('english_level')} "
+                      f"score: {coaching.get('overall_language_score')}")
+                return coaching
     except Exception as e:
         print(f"[Gemini Transcript] Error: {e}")
 
@@ -793,31 +877,50 @@ def analyze_video_with_model(video_path: str):
 @app.post("/process")
 async def process_media(request: ProcessRequest):
     try:
+        vp = (request.video_path or "").strip()
+        local_video, temp_video = resolve_local_video_path(vp)
+
         # ── Video Analysis ──────────────────────────────────────────────
         video = None
-        if request.video_path and os.path.exists(request.video_path):
-            print(f"[Process] Analyzing video: {request.video_path}")
-            video = analyze_video_with_model(request.video_path)
+        if local_video and os.path.exists(local_video):
+            print(f"[Process] Analyzing video: {local_video}")
+            video = analyze_video_with_model(local_video)
         else:
             print("[Process] No video file, text-only analysis")
 
-        # ── Voice Model Analysis ────────────────────────────────────────
+        # ── Voice Model Analysis + Supabase audio upload ───────────────
         voice_scores = None
-        if request.video_path and os.path.exists(request.video_path):
+        audio_url = None
+        if local_video and os.path.exists(local_video):
             print("[Process] Extracting audio for voice model...")
-            audio_path = extract_audio_from_video(request.video_path)
+            audio_path = extract_audio_from_video(local_video)
             if audio_path:
-                voice_scores = run_voice_model(audio_path)
-                # Clean up temp audio file
                 try:
-                    os.remove(audio_path)
-                except Exception:
-                    pass
-                if voice_scores:
-                    print(f"[Process] Voice model: conf={voice_scores['confidence_score']:.2f}, "
-                          f"pitch={voice_scores['pitch_score']:.2f}, "
-                          f"fluency={voice_scores['fluency_score']:.2f}, "
-                          f"energy={voice_scores['energy_score']:.2f}")
+                    voice_scores = run_voice_model(audio_path)
+                    if voice_scores:
+                        print(
+                            f"[Process] Voice model: conf={voice_scores['confidence_score']:.2f}, "
+                            f"pitch={voice_scores['pitch_score']:.2f}, "
+                            f"fluency={voice_scores['fluency_score']:.2f}, "
+                            f"energy={voice_scores['energy_score']:.2f}"
+                        )
+                    uid = (request.user_id or "anonymous").strip()
+                    audio_url = upload_extracted_audio_to_supabase(
+                        audio_path, uid, request.interview_id
+                    )
+                    if audio_url:
+                        print(f"[Process] Audio stored: {audio_url}")
+                finally:
+                    try:
+                        os.remove(audio_path)
+                    except Exception:
+                        pass
+
+        if temp_video and os.path.exists(temp_video):
+            try:
+                os.remove(temp_video)
+            except Exception:
+                pass
 
         # ── Transcript Analysis ─────────────────────────────────────────
         filler = analyze_filler_words(request.transcript or "")
@@ -952,6 +1055,7 @@ async def process_media(request: ProcessRequest):
                 "energy_score": 0.5,
             },
             "englishCoaching": english_coaching,   # Gemini transcript analysis
+            "audio_url": audio_url,
         }
 
         print(f"[Process] Complete. Overall score: {overall_score}")

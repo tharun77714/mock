@@ -24,6 +24,7 @@ export interface IInterview extends Document {
       fluency_score: number;
       energy_score: number;
     };
+    englishCoaching?: Record<string, unknown>;
   };
   status: 'pending' | 'completed' | 'failed';
   createdAt: Date;
@@ -74,6 +75,7 @@ const InterviewSchema: Schema = new Schema(
         fluency_score: { type: Number, default: 0 },
         energy_score: { type: Number, default: 0 },
       },
+      englishCoaching: { type: Schema.Types.Mixed },
     },
     status: { type: String, enum: ['pending', 'completed', 'failed'], default: 'pending' },
   },

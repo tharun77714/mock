@@ -397,6 +397,12 @@ export default function SummaryPage() {
                 </div>
               )}
             </div>
+            {data.audioUrl ? (
+              <div className="rounded-2xl bg-white/5 border border-white/10 p-4">
+                <p className="text-xs text-slate-400 mb-2 uppercase tracking-wider">Interview audio</p>
+                <audio src={data.audioUrl} className="w-full" controls preload="metadata" />
+              </div>
+            ) : null}
 
             {/* Quick Stats */}
             <div className="p-6 rounded-3xl bg-white/5 border border-white/10">

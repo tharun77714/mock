@@ -131,9 +131,10 @@ inference_transform = transforms.Compose([
 ])
 
 # ---------------------------------------------------------------------------
-# CNN + BiLSTM Voice Confidence Model (best_model.pth)
+# CNN + BiLSTM + Blend MLP Voice Confidence Model (Blended Architecture v2)
+# Confidence = blend(emotion_probs, acoustic_features) — no fake lookup tables
 # ---------------------------------------------------------------------------
-VOICE_MODEL_PATH = os.path.join(os.path.dirname(__file__), "best_model.pth")
+VOICE_MODEL_PATH = os.path.join(os.path.dirname(__file__), "best_model_new.pth")
 VOICE_EMOTIONS = ['angry', 'disgust', 'fearful', 'happy', 'neutral', 'sad']
 MAX_FRAMES = 94
 PROSODIC_COLS = [
@@ -156,7 +157,11 @@ class ConvBlock(nn.Module):
         return self.conv(x)
 
 
-class AudioConfidenceModel(nn.Module):
+class VoiceConfidenceModel(nn.Module):
+    """Blended architecture v2:
+    CNN+BiLSTM → emotion_probs (6, soft) + prosodic_enc (32) → Blend MLP → confidence (1)
+    Emotion is auxiliary — shapes the backbone, not the sole confidence source.
+    """
     def __init__(self):
         super().__init__()
         self.cnn = nn.Sequential(
@@ -166,17 +171,16 @@ class AudioConfidenceModel(nn.Module):
         self.cnn_proj = nn.Sequential(nn.Linear(1024, 256), nn.LayerNorm(256), nn.ReLU())
         self.bilstm = nn.LSTM(256, 256, 2, batch_first=True, bidirectional=True, dropout=0.3)
         self.attention = nn.Sequential(nn.Linear(512, 64), nn.Tanh(), nn.Linear(64, 1))
-        self.prosodic_encoder = nn.Sequential(nn.Linear(13, 64), nn.ReLU(), nn.BatchNorm1d(64))
-        self.fusion = nn.Sequential(
-            nn.Linear(512 + 64, 256), nn.ReLU(), nn.Dropout(0.3),
-            nn.Linear(256, 128), nn.ReLU()
+        # Auxiliary emotion head (6 emotions)
+        self.emotion_head = nn.Sequential(nn.Linear(512, 64), nn.ReLU(), nn.Linear(64, 6))
+        # Prosodic encoder
+        self.prosodic_enc = nn.Sequential(nn.Linear(13, 32), nn.ReLU(), nn.BatchNorm1d(32))
+        # Blend MLP: emotion_probs(6) + prosodic(32) → confidence(1)
+        self.blend = nn.Sequential(
+            nn.Linear(6 + 32, 64), nn.ReLU(), nn.Dropout(0.3),
+            nn.Linear(64, 32), nn.ReLU(),
+            nn.Linear(32, 1), nn.Sigmoid()
         )
-        head = lambda out: nn.Sequential(nn.Linear(128, 64), nn.ReLU(), nn.Linear(64, out))
-        self.head_emotion = head(6)
-        self.head_confidence = nn.Sequential(head(1), nn.Sigmoid())
-        self.head_pitch = nn.Sequential(head(1), nn.Sigmoid())
-        self.head_fluency = nn.Sequential(head(1), nn.Sigmoid())
-        self.head_energy = nn.Sequential(head(1), nn.Sigmoid())
 
     def forward(self, mel, prosodic):
         B = mel.shape[0]
@@ -185,28 +189,27 @@ class AudioConfidenceModel(nn.Module):
         lstm_out, _ = self.bilstm(x)
         weights = torch.softmax(self.attention(lstm_out), dim=1)
         pooled = (lstm_out * weights).sum(dim=1)
-        pros = self.prosodic_encoder(prosodic)
-        shared = self.fusion(torch.cat([pooled, pros], dim=1))
-        return {
-            'emotion': self.head_emotion(shared),
-            'confidence': self.head_confidence(shared).squeeze(-1),
-            'pitch': self.head_pitch(shared).squeeze(-1),
-            'fluency': self.head_fluency(shared).squeeze(-1),
-            'energy': self.head_energy(shared).squeeze(-1)
-        }
+        emotion_logits = self.emotion_head(pooled)
+        emotion_probs  = torch.softmax(emotion_logits, dim=1)
+        pros = self.prosodic_enc(prosodic)
+        confidence = self.blend(torch.cat([emotion_probs, pros], dim=1)).squeeze(-1)
+        return {'emotion_logits': emotion_logits, 'confidence': confidence}
 
 
 voice_model = None
 voice_label_encoder = None
-voice_scaler = None
+voice_scaler_mean = None
+voice_scaler_std  = None
 try:
     ckpt = torch.load(VOICE_MODEL_PATH, map_location=device, weights_only=False)
-    voice_model = AudioConfidenceModel().to(device)
+    voice_model = VoiceConfidenceModel().to(device)
     voice_model.load_state_dict(ckpt['model'])
     voice_model.eval()
     voice_label_encoder = ckpt.get('label_encoder', VOICE_EMOTIONS)
-    voice_scaler = ckpt.get('scaler', None)
-    print(f"[OK] Voice CNN+BiLSTM model loaded from {VOICE_MODEL_PATH}")
+    # Blended model stores scaler as mean/std arrays instead of sklearn object
+    voice_scaler_mean = np.array(ckpt['scaler_mean']) if 'scaler_mean' in ckpt else None
+    voice_scaler_std  = np.array(ckpt['scaler_std'])  if 'scaler_std'  in ckpt else None
+    print(f"[OK] VoiceConfidenceModel (blended v2) loaded from {VOICE_MODEL_PATH}")
 except Exception as e:
     print(f"[WARN] Could not load voice model: {e}")
 
@@ -370,33 +373,39 @@ def run_voice_model(audio_path: str) -> Optional[dict]:
         else:
             mel = F.pad(mel, (0, MAX_FRAMES - mel.shape[2]))
 
-        # Prosodic features — extract REAL features using Praat (identical to training)
-        y = wav.squeeze().numpy()
+        # Extract real prosodic features using Praat (identical to training pipeline)
         prosodic_list = extract_real_prosodic(audio_path)
-        
-        # Scale the features using the saved StandardScaler
-        prosodic_arr = np.array(prosodic_list).reshape(1, -1)
-        if voice_scaler is not None:
-            try:
-                prosodic_arr = voice_scaler.transform(prosodic_arr)
-            except Exception as e:
-                print(f"[Voice Model] Warning: scaler transform failed: {e}")
 
-        mel_tensor = mel.unsqueeze(0).float().to(device)   # (1, 1, 128, 94)
-        pros_tensor = torch.tensor(prosodic_arr, dtype=torch.float32).to(device)  # (1, 13)
+        # Normalize using saved scaler mean/std arrays
+        prosodic_arr = np.array(prosodic_list).reshape(1, -1)
+        if voice_scaler_mean is not None and voice_scaler_std is not None:
+            prosodic_arr = (prosodic_arr - voice_scaler_mean) / (voice_scaler_std + 1e-8)
+
+        mel_tensor  = mel.unsqueeze(0).float().to(device)                          # (1, 1, 128, 94)
+        pros_tensor = torch.tensor(prosodic_arr, dtype=torch.float32).to(device)   # (1, 13)
 
         with torch.no_grad():
             out = voice_model(mel_tensor, pros_tensor)
 
-        emotion_idx = int(torch.argmax(out['emotion'], dim=1).item())
+        emotion_idx  = int(torch.argmax(out['emotion_logits'], dim=1).item())
         emotion_name = voice_label_encoder[emotion_idx] if voice_label_encoder else VOICE_EMOTIONS[emotion_idx]
 
+        # Single blended confidence score (primary output)
+        confidence = round(float(out['confidence'].item()), 3)
+
+        # Derive pitch / fluency / energy directly from raw prosodic features
+        # so the frontend API contract stays identical
+        raw = prosodic_list  # unscaled values
+        pitch_score   = round(float(np.clip(raw[3], 0, 1)), 3)                      # pitch_stability
+        fluency_score = round(float(np.clip(1.0 - raw[11], 0, 1)), 3)              # 1 - silence_ratio
+        energy_score  = round(float(np.clip(raw[7] / 0.08, 0, 1)), 3)             # energy_mean normalised
+
         return {
-            "voice_emotion": emotion_name,
-            "confidence_score": round(float(out['confidence'].item()), 3),
-            "pitch_score": round(float(out['pitch'].item()), 3),
-            "fluency_score": round(float(out['fluency'].item()), 3),
-            "energy_score": round(float(out['energy'].item()), 3),
+            "voice_emotion":    emotion_name,
+            "confidence_score": confidence,
+            "pitch_score":      pitch_score,
+            "fluency_score":    fluency_score,
+            "energy_score":     energy_score,
         }
     except Exception as e:
         print(f"[Voice Model] Error: {e}")

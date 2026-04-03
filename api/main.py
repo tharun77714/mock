@@ -863,9 +863,19 @@ def analyze_video_with_model(video_path: str):
             frames_with_face += 1
             lm = results.multi_face_landmarks[0].landmark
 
-            # ── Head stability: track nose tip position ────────────
+            # ── Head stability tracking (Frame-to-Frame velocity) ──
             nose = lm[1]
             face_positions.append((nose.x, nose.y))
+
+            # ── Head Pitch tracking (Looking Down) ─────────────────
+            # Z corresponds to depth relative to face origin.
+            # Forehead is 10, Chin is 152. 
+            # When looking severely down at a screen, forehead is much closer to camera than chin.
+            forehead_z = lm[10].z
+            chin_z = lm[152].z
+            # Negative difference heavily implies looking down / chin tucked into chest
+            pitch_diff = chin_z - forehead_z
+            is_looking_down = pitch_diff < -0.06  # Heuristic threshold for "looking down"
 
             # ── REAL Eye Contact via Iris Gaze ─────────────────────
             # Get iris center (average of 4 iris landmarks)
@@ -894,7 +904,9 @@ def analyze_video_with_model(video_path: str):
 
             # Average gaze ratio: 0.5 = center = looking at camera
             avg_ratio = (left_ratio + right_ratio) / 2.0
-            looking_at_camera = abs(avg_ratio - 0.5) <= GAZE_TOLERANCE
+            
+            # They are only looking at the camera if their irises are level AND they are not tilted downward
+            looking_at_camera = (abs(avg_ratio - 0.5) <= GAZE_TOLERANCE) and not is_looking_down
             if looking_at_camera:
                 frames_eye_contact += 1
 
@@ -915,24 +927,30 @@ def analyze_video_with_model(video_path: str):
     face_mesh.close()
 
     # ── Compute final scores ───────────────────────────────────────
-    # Raw gaze: % of face frames where iris is near center (looking toward lens)
+    # Raw gaze: % of face frames where iris is near center AND pitch is level
     gaze_raw = round((frames_eye_contact / max(frames_with_face, 1)) * 100, 1)
-    # Face visibility: % of sampled frames where a face was detected
     face_visibility = round((frames_with_face / max(frames_analyzed, 1)) * 100, 1)
-    # If gaze reads ~0 but face is clearly in frame (common: tolerance / mirror issues), blend in visibility.
-    if gaze_raw < 12 and face_visibility > 45:
-        eye_contact_score = round(min(100.0, gaze_raw * 0.45 + face_visibility * 0.55), 1)
+    
+    # Do not blend face_visibility if they are explicitly looking down (gaze_raw would be legit 0)
+    # We only blend if face visibility is extremely high and gaze is artificially low due to mirror
+    if gaze_raw < 15 and face_visibility > 85 and not _MIRROR:
+         eye_contact_score = round((gaze_raw + face_visibility) / 2.0, 1)
     else:
-        eye_contact_score = gaze_raw
+         eye_contact_score = gaze_raw
 
-    # Head stability: nose movement (normalized). Single sample → unknown, don't report 0.
+    # Head stability: Track frame-to-frame velocity (jitter) instead of global variance
     stability_score = 70.0
-    if len(face_positions) > 1:
+    if len(face_positions) > 5:
+        # Calculate Euclidean distances between consecutive nose positions
         pos_array = np.array(face_positions)
-        x_std = float(np.std(pos_array[:, 0]))
-        y_std = float(np.std(pos_array[:, 1]))
-        # Softer than *4 — previous curve collapsed to 0 for normal movement
-        stability_score = float(max(0, min(100, int((1.0 - min(1.0, (x_std + y_std) * 2.2)) * 100))))
+        diffs = np.diff(pos_array, axis=0)
+        velocities = np.linalg.norm(diffs, axis=1)
+        mean_vel = np.mean(velocities)
+        
+        # Mean velocity > 0.05 is extremely jittery/unstable. 0 is perfectly still.
+        # Maps 0.0 vel -> 100%, 0.10 vel -> 0%
+        raw_stability = max(0, 100.0 - (mean_vel * 1200.0))
+        stability_score = round(raw_stability, 1)
 
     emotion_breakdown = {}
     total_emotions = sum(emotion_accumulator.values())

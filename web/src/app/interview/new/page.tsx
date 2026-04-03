@@ -113,10 +113,6 @@ CRITICAL INSTRUCTIONS:
       messages: [{ role: "system" as const, content: systemPrompt }],
       temperature: 0.6,
     },
-    voice: {
-      provider: "11labs" as const,
-      voiceId: "21m00Tcm4TlvDq8ikWAM",
-    },
     clientMessages: ["transcript", "hangup", "speech-update"],
     silenceTimeoutSeconds: 60,
     maxDurationSeconds: 1800,
@@ -148,10 +144,6 @@ CRITICAL INSTRUCTIONS:
       model: "gpt-4o",
       messages: [{ role: "system" as const, content: systemPrompt }],
       temperature: 0.6,
-    },
-    voice: {
-      provider: "11labs" as const,
-      voiceId: "21m00Tcm4TlvDq8ikWAM",
     },
     clientMessages: ["transcript", "hangup", "speech-update"],
     silenceTimeoutSeconds: 60,
@@ -323,7 +315,24 @@ export default function InterviewPage() {
     });
 
     v.on("error", (e: any) => {
-      console.error("[Vapi] error:", e);
+      console.error("[Vapi] Raw Error Object:", e);
+      let errMsg = "Vapi connection failed. Check console for details.";
+      
+      try {
+        if (e && e.error && e.error.message) {
+          errMsg = Array.isArray(e.error.message) ? e.error.message.join(", ") : e.error.message;
+        } else if (e && e.message) {
+          errMsg = Array.isArray(e.message) ? e.message.join(", ") : e.message;
+        } else if (typeof e === "string") {
+          errMsg = e;
+        } else {
+          errMsg = JSON.stringify(e);
+        }
+      } catch (err) {
+        console.error("Failed to parse Vapi error:", err);
+      }
+      
+      setContextError(errMsg);
       setIsConnecting(false);
     });
 
@@ -422,11 +431,28 @@ export default function InterviewPage() {
     uploadTriggeredRef.current = false;
 
     try {
+      let cfg: any = null;
       if (jobRole.trim() || resumeText) {
-        const cfg = buildPersonalizedAssistant(jobRole, companyName, resumeText, interviewContext);
-        await vapiRef.current?.start(cfg as any);
-      } else {
-        await vapiRef.current?.start(wf);
+        cfg = buildPersonalizedAssistant(jobRole, companyName, resumeText, interviewContext);
+      }
+
+      if (wf) {
+        if (cfg) {
+          // If we have a Dashboard Workflow *and* a dynamic job/resume prompt, OVERRIDE the prompt!
+          // This ensures Vapi still uses the Voice configured in the developer's Dashboard.
+          const overrides = {
+            firstMessage: cfg.firstMessage,
+            model: cfg.model
+          };
+          await vapiRef.current?.start(wf, overrides);
+        } else {
+          // Just start standard dashboard
+          await vapiRef.current?.start(wf);
+        }
+      } else if (cfg) {
+        // Fallback for purely transient execution without Dashboard Workflow
+        cfg.voice = { provider: "playht", voiceId: "jennifer" };
+        await vapiRef.current?.start(cfg);
       }
     } catch (err) {
       console.error("Failed to start Vapi:", err);

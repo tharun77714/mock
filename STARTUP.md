@@ -53,7 +53,8 @@ Open http://localhost:8000 — you should see:
 | Voice model not loaded | Make sure `best_model.pth` is inside `dl/api/` |
 | Port 8000 in use | `netstat -ano \| findstr 8000` then `taskkill /PID <id> /F` |
 | MongoDB error | Whitelist your IP in MongoDB Atlas → Network Access |
-| Gemini error | Check your API key in `.env.local` (do not commit it) |
+| Gemini quota / rate limits | Add free **`GROQ_API_KEY`** from [Groq](https://console.groq.com/keys) to `web/.env.local` — interview context tries **Groq → OpenAI → Gemini**. `pip install openai` in the API venv. |
+| Gemini error | Check `GOOGLE_GENERATIVE_AI_API_KEY` in `.env.local` (do not commit it) |
 | Video not visible on another PC | Add **`SUPABASE_SERVICE_ROLE_KEY`** to `web/.env.local` and create Storage bucket **`interviews`** (see `ARCHITECTURE.md`) |
 
 ---

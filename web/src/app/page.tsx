@@ -22,7 +22,15 @@ export default function Home() {
       {session ? (
         <DashboardContent user={session.user} />
       ) : (
-        <LandingHero />
+        <>
+          <LandingHero />
+          <button
+            className="mx-auto mt-6 flex items-center justify-center rounded-md bg-indigo-600 px-6 py-3 text-white hover:bg-indigo-500"
+            onClick={() => (window.location.href = '/auth.html')}
+          >
+            Sign up / Sign in
+          </button>
+        </>
       )}
     </main>
   );

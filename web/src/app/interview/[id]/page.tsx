@@ -6,7 +6,7 @@ import { Navbar } from '@/components/Navbar';
 import { Button } from '@/components/ui/Button';
 import { 
   FileText, TrendingUp, CheckCircle2, AlertCircle, ArrowLeft,
-  Download, Share2, Play, Eye, Activity, Brain, MessageCircle,
+  Download, Share2, Play, Eye, User, Activity, Brain, MessageCircle,
   Gauge, Mic2, Mic, Sparkles, BookOpen, ChevronRight
 } from 'lucide-react';
 import { motion } from 'framer-motion';
@@ -38,7 +38,11 @@ function ScoreRing({ score, size = 120, label, color = "indigo" }: { score: numb
   );
 }
 
-function MetricCard({ icon: Icon, title, value, subtitle, color = "indigo" }: { icon: any; title: string; value: string; subtitle?: string; color?: string }) {
+function MetricCard({ 
+  icon: Icon, title, value, subtitle, color = "indigo", onClick, children 
+}: { 
+  icon: any; title: string; value: string; subtitle?: string; color?: string; onClick?: () => void; children?: React.ReactNode 
+}) {
   const colors: Record<string, string> = {
     indigo: "text-indigo-400 bg-indigo-500/10 border-indigo-500/20",
     emerald: "text-emerald-400 bg-emerald-500/10 border-emerald-500/20",
@@ -48,13 +52,17 @@ function MetricCard({ icon: Icon, title, value, subtitle, color = "indigo" }: { 
   };
   const [textColor] = (colors[color] || colors.indigo).split(" ");
   return (
-    <div className={`p-5 rounded-2xl border ${colors[color] || colors.indigo}`}>
+    <div 
+      onClick={onClick}
+      className={`p-5 rounded-2xl border ${colors[color] || colors.indigo} ${onClick ? 'cursor-pointer hover:bg-opacity-80 hover:border-opacity-50 transition-all duration-200' : ''}`}
+    >
       <div className="flex items-center gap-3 mb-3">
         <Icon className={`h-5 w-5 ${textColor}`} />
         <h4 className="text-sm font-bold text-white">{title}</h4>
       </div>
       <p className={`text-2xl font-bold ${textColor}`}>{value}</p>
       {subtitle && <p className="text-xs text-slate-400 mt-1">{subtitle}</p>}
+      {children}
     </div>
   );
 }
@@ -64,6 +72,7 @@ export default function SummaryPage() {
   const router = useRouter();
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [showEmotions, setShowEmotions] = useState(false);
 
   useEffect(() => {
     async function fetchInterview() {
@@ -151,39 +160,44 @@ export default function SummaryPage() {
             
             {/* Metric Cards */}
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
-              <MetricCard icon={Eye} title="Eye Contact" value={a.eyeContact?.label || "N/A"} subtitle={`${a.eyeContact?.score || 0}% face visibility`} color="blue" />
-              <MetricCard icon={Activity} title="Head Stability" value={a.headStability?.label || "N/A"} subtitle={`Score: ${a.headStability?.score || 0}%`} color="amber" />
-              <MetricCard icon={Brain} title="Facial Expression" value={a.facialExpression?.dominant || "N/A"} subtitle="Dominant expression" color="indigo" />
+              <MetricCard icon={Eye} title="Eye contact (gaze)" value={a.eyeContact?.label || "N/A"} subtitle={`${a.eyeContact?.score ?? 0}% toward camera`} color="blue" />
+              {a.faceInFrame != null && (
+                <MetricCard icon={User} title="Face in frame" value={a.faceInFrame.label || "—"} subtitle={`${a.faceInFrame.score ?? 0}% of sampled frames`} color="emerald" />
+              )}
+              <MetricCard icon={Activity} title="Head Stability" value={a.headStability?.label || "N/A"} subtitle={`${a.headStability?.score || 0}% (movement)`} color="amber" />
+              <MetricCard 
+                icon={Brain} 
+                title="Facial Expression" 
+                value={a.facialExpression?.dominant || "N/A"} 
+                subtitle={showEmotions ? "Hide percentage breakdown" : "Click to view breakdown"} 
+                color="indigo"
+                onClick={() => setShowEmotions(!showEmotions)}
+              >
+                <div 
+                  className={`overflow-hidden transition-all duration-300 ease-in-out ${showEmotions ? 'max-h-64 opacity-100 mt-4' : 'max-h-0 opacity-0 mt-0'}`}
+                >
+                  <div className="space-y-2 border-t border-indigo-500/20 pt-4 pb-1">
+                    {a.facialExpression?.breakdown && Object.entries(a.facialExpression.breakdown)
+                      .sort(([, a]: any, [, b]: any) => b - a)
+                      .map(([emotion, percentage]: [string, any]) => (
+                        <div key={emotion} className="flex items-center gap-2">
+                          <span className="w-16 text-[10px] text-indigo-300 capitalize font-bold tracking-wider">{emotion}</span>
+                          <div className="flex-1 h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                            <div 
+                              className="h-full bg-indigo-500 rounded-full transition-all duration-500"
+                              style={{ width: `${percentage}%` }}
+                            />
+                          </div>
+                          <span className="text-[10px] font-bold text-slate-300 w-8 text-right">{percentage}%</span>
+                        </div>
+                      ))}
+                  </div>
+                </div>
+              </MetricCard>
               <MetricCard icon={MessageCircle} title="Filler Words" value={`${a.fillerWords?.count || 0}`} subtitle={`${a.fillerWords?.perMinute || 0}/min`} color="rose" />
               <MetricCard icon={Gauge} title="Speaking Pace" value={`${a.speakingPace?.wpm || 0} wpm`} subtitle={a.speakingPace?.label || ""} color="emerald" />
               <MetricCard icon={TrendingUp} title="Posture" value={a.posture?.label || "N/A"} subtitle={a.posture?.details || ""} color="blue" />
             </div>
-
-            {/* Emotion Breakdown */}
-            {a.facialExpression?.breakdown && Object.keys(a.facialExpression.breakdown).length > 0 && (
-              <section className="p-6 rounded-3xl bg-white/5 border border-white/10">
-                <h3 className="text-lg font-bold text-white mb-5 flex items-center gap-2">
-                  <Brain className="h-5 w-5 text-indigo-400" />
-                  Facial Expression Breakdown (EfficientNet-B0)
-                </h3>
-                <div className="space-y-3">
-                  {Object.entries(a.facialExpression.breakdown)
-                    .sort(([, a]: any, [, b]: any) => b - a)
-                    .map(([emotion, percentage]: [string, any]) => (
-                      <div key={emotion} className="flex items-center gap-3">
-                        <span className="w-20 text-sm text-slate-400 capitalize">{emotion}</span>
-                        <div className="flex-1 h-2 bg-slate-800 rounded-full overflow-hidden">
-                          <div 
-                            className="h-full bg-indigo-500 rounded-full transition-all duration-500"
-                            style={{ width: `${percentage}%` }}
-                          />
-                        </div>
-                        <span className="text-sm font-bold text-slate-300 w-14 text-right">{percentage}%</span>
-                      </div>
-                    ))}
-                </div>
-              </section>
-            )}
 
             {/* Voice Analysis — CNN+BiLSTM */}
             {a.voiceAnalysis && (
@@ -279,7 +293,7 @@ export default function SummaryPage() {
                 <h3 className="text-lg font-bold text-white mb-4 flex items-center gap-2">
                   <Sparkles className="h-5 w-5 text-indigo-400" />
                   AI Coaching Suggestions
-                  <span className="ml-auto text-[10px] font-bold text-indigo-400 uppercase tracking-widest">Gemini AI</span>
+                  <span className="ml-auto text-[10px] font-bold text-indigo-400 uppercase tracking-widest">AI (Groq / OpenAI / Gemini)</span>
                 </h3>
                 <ul className="space-y-3">
                   {a.suggestions?.map((s: string, i: number) => (
@@ -299,7 +313,7 @@ export default function SummaryPage() {
                   <BookOpen className="h-5 w-5 text-emerald-400" />
                   English & Communication Coaching
                   <span className="ml-auto text-[10px] font-bold text-emerald-400 uppercase tracking-widest px-2 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20">
-                    Gemini AI
+                    AI (Groq / OpenAI / Gemini)
                   </span>
                 </h3>
                 

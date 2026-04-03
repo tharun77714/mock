@@ -11,6 +11,7 @@ export interface IInterview extends Document {
     communication: string;
     suggestions: string[];
     eyeContact: { score: number; label: string };
+    faceInFrame?: { score: number; label: string };
     posture: { score: number; label: string; details: string };
     headStability: { score: number; label: string };
     facialExpression: { dominant: string; breakdown: Record<string, number> };
@@ -42,6 +43,10 @@ const InterviewSchema: Schema = new Schema(
       communication: { type: String, default: "" },
       suggestions: [{ type: String }],
       eyeContact: {
+        score: { type: Number, default: 0 },
+        label: { type: String, default: "" },
+      },
+      faceInFrame: {
         score: { type: Number, default: 0 },
         label: { type: String, default: "" },
       },

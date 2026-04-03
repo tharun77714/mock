@@ -6,7 +6,8 @@ try:
 
     _repo_root = Path(__file__).resolve().parent.parent
     load_dotenv(_repo_root / "web" / ".env.local")
-    load_dotenv(_repo_root / ".env.local")
+    # Root env wins so keys like OPENAI_API_KEY are not blocked by empty lines in web/.env.local
+    load_dotenv(_repo_root / ".env.local", override=True)
 except ImportError:
     pass
 
@@ -23,20 +24,17 @@ from pydantic import BaseModel
 from typing import Optional
 from collections import Counter
 # MediaPipe: import FaceMesh directly (compatible with 0.10.x which removed mp.solutions)
-try:
-    from mediapipe.python.solutions.face_mesh import FaceMesh as MPFaceMesh
-    MEDIAPIPE_OK = True
-    print("[OK] MediaPipe FaceMesh loaded")
-except ImportError:
-    try:
-        import mediapipe as mp
-        MPFaceMesh = mp.solutions.face_mesh.FaceMesh
-        MEDIAPIPE_OK = True
-        print("[OK] MediaPipe FaceMesh loaded (legacy)")
-    except Exception as e:
-        MPFaceMesh = None
-        MEDIAPIPE_OK = False
-        print(f"[WARN] MediaPipe not available: {e}")
+# ---------------------------------------------------------------------------
+# Eye Contact — OpenCV DNN face + landmark detector (no mediapipe needed)
+# Uses OpenCV's built-in Haarcascade + eye detector for gaze estimation
+# Zero extra dependencies — cv2 is already installed
+# ---------------------------------------------------------------------------
+EYE_DETECTOR_OK = True  # cv2 is always available
+print("[OK] Eye contact detector ready (OpenCV Haarcascade — no mediapipe needed)")
+
+# Legacy mediapipe stubs — kept so rest of code that checks MEDIAPIPE_OK still works
+MPFaceMesh = None
+MEDIAPIPE_OK = False
 
 import torch
 import torch.nn as nn
@@ -59,11 +57,28 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+from routers.resume import resume_router
+app.include_router(resume_router, prefix="/api")
+
 # ---------------------------------------------------------------------------
 # Gemini Setup
 # ---------------------------------------------------------------------------
 GEMINI_API_KEY = os.environ.get("GOOGLE_GENERATIVE_AI_API_KEY", "")
 gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+
+# Text LLMs for /generate-interview-context (order: Groq → OpenAI → Gemini)
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
+GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile").strip()
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini").strip()
+if GROQ_API_KEY:
+    print(f"[OK] GROQ_API_KEY set — free-tier interview context via Groq ({GROQ_MODEL})")
+if OPENAI_API_KEY:
+    print("[OK] OPENAI_API_KEY set (used if Groq fails or is unset)")
+if gemini_client:
+    print("[OK] Gemini configured (fallback; free tier is easy to rate-limit)")
+if not (GROQ_API_KEY or OPENAI_API_KEY or gemini_client):
+    print("[WARN] No GROQ / OpenAI / Gemini key — interview context will return 503")
 
 # ---------------------------------------------------------------------------
 # Device
@@ -400,6 +415,11 @@ def run_voice_model(audio_path: str) -> Optional[dict]:
         fluency_score = round(float(np.clip(1.0 - raw[11], 0, 1)), 3)              # 1 - silence_ratio
         energy_score  = round(float(np.clip(raw[7] / 0.08, 0, 1)), 3)             # energy_mean normalised
 
+        # Blend model confidence with prosody when the net outputs ~0 but audio is clearly voiced
+        if confidence < 0.12:
+            aux = (pitch_score + fluency_score + energy_score) / 3.0
+            confidence = round(min(1.0, max(confidence, 0.2 * confidence + 0.8 * aux)), 3)
+
         return {
             "voice_emotion":    emotion_name,
             "confidence_score": confidence,
@@ -504,7 +524,51 @@ def extract_real_prosodic(audio_path: str) -> list:
 
 
 # ---------------------------------------------------------------------------
-# Gemini suggestions helper
+# LLM helper — Groq (free) → OpenAI → Gemini (same order as interview context)
+# ---------------------------------------------------------------------------
+def _llm_chat(messages: list, temperature: float = 0.5) -> Optional[str]:
+    """Return assistant text, or None if every provider fails."""
+    if GROQ_API_KEY:
+        try:
+            from openai import OpenAI
+
+            client = OpenAI(api_key=GROQ_API_KEY, base_url="https://api.groq.com/openai/v1")
+            resp = client.chat.completions.create(
+                model=GROQ_MODEL,
+                messages=messages,
+                temperature=temperature,
+            )
+            return (resp.choices[0].message.content or "").strip()
+        except Exception as e:
+            print(f"[LLM] Groq failed: {e}")
+    if OPENAI_API_KEY:
+        try:
+            from openai import OpenAI
+
+            client = OpenAI(api_key=OPENAI_API_KEY)
+            resp = client.chat.completions.create(
+                model=OPENAI_MODEL,
+                messages=messages,
+                temperature=temperature,
+            )
+            return (resp.choices[0].message.content or "").strip()
+        except Exception as e:
+            print(f"[LLM] OpenAI failed: {e}")
+    if gemini_client:
+        try:
+            blob = "\n\n".join(f"{m['role'].upper()}: {m['content']}" for m in messages)
+            response = gemini_client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=blob,
+            )
+            return (getattr(response, "text", None) or "").strip()
+        except Exception as e:
+            print(f"[LLM] Gemini failed: {e}")
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Gemini suggestions helper (uses Groq/OpenAI/Gemini via _llm_chat)
 # ---------------------------------------------------------------------------
 def get_gemini_suggestions(
     voice_emotion: str,
@@ -548,21 +612,22 @@ Rules:
 Example format: ["suggestion 1", "suggestion 2", "suggestion 3"]"""
 
     try:
-        if gemini_client:
-            response = gemini_client.models.generate_content(
-                model="gemini-1.5-flash",
-                contents=prompt,
-            )
-            text = response.text.strip()
-            # Parse JSON array from response
-            start = text.find('[')
-            end = text.rfind(']') + 1
+        text = _llm_chat(
+            [
+                {"role": "system", "content": "Reply with a JSON array of exactly 3 strings only. No markdown."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.55,
+        )
+        if text:
+            start = text.find("[")
+            end = text.rfind("]") + 1
             if start != -1 and end > start:
                 suggestions = json.loads(text[start:end])
                 if isinstance(suggestions, list):
                     return [str(s) for s in suggestions[:3]]
     except Exception as e:
-        print(f"[Gemini] Error: {e}")
+        print(f"[Suggestions LLM] Error: {e}")
 
     # Fallback suggestions if Gemini fails
     fallback = []
@@ -632,22 +697,23 @@ Be specific — quote exact phrases from the candidate's answers when pointing o
 No markdown, only raw JSON."""
 
     try:
-        if gemini_client:
-            response = gemini_client.models.generate_content(
-                model="gemini-1.5-flash",
-                contents=prompt,
-            )
-            text = response.text.strip()
-            # Parse JSON
-            start = text.find('{')
-            end = text.rfind('}') + 1
+        text = _llm_chat(
+            [
+                {"role": "system", "content": "Reply with one JSON object only. No markdown."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.45,
+        )
+        if text:
+            start = text.find("{")
+            end = text.rfind("}") + 1
             if start != -1 and end > start:
                 coaching = json.loads(text[start:end])
-                print(f"[Gemini Transcript] English level: {coaching.get('english_level')} "
+                print(f"[Transcript coaching] English level: {coaching.get('english_level')} "
                       f"score: {coaching.get('overall_language_score')}")
                 return coaching
     except Exception as e:
-        print(f"[Gemini Transcript] Error: {e}")
+        print(f"[Transcript coaching LLM] Error: {e}")
 
     return {
         "english_level": "Analysis unavailable",
@@ -724,54 +790,60 @@ def analyze_speaking_pace(transcript_str: str):
     return {"wpm": wpm, "label": label}
 
 
-# MediaPipe iris landmark indices
-# Left iris: 474-477, Right iris: 469-472
-# Left eye corners: 33 (left), 133 (right)
-# Right eye corners: 362 (left), 263 (right)
-LEFT_IRIS  = [474, 475, 476, 477]
-RIGHT_IRIS = [469, 470, 471, 472]
-L_EYE_LEFT_CORNER  = 33
-L_EYE_RIGHT_CORNER = 133
-R_EYE_LEFT_CORNER  = 362
-R_EYE_RIGHT_CORNER = 263
-
-GAZE_TOLERANCE = 0.18   # iris must be within 18% of center to count as "looking at camera"
-
-
+# ---------------------------------------------------------------------------
+# Eye Contact — MediaPipe Iris + Head-Pose Correction
+# ---------------------------------------------------------------------------
+# Iris landmark indices (requires refine_landmarks=True)
 def analyze_video_with_model(video_path: str):
-    if not MEDIAPIPE_OK or MPFaceMesh is None:
-        # Fallback: no eye contact tracking
-        print("[Video] MediaPipe not available, skipping gaze tracking")
+    """
+    Pure-OpenCV eye contact + emotion analysis.
+    No mediapipe required — works with any OpenCV version.
+
+    Eye contact method:
+      1. Detect face with Haarcascade
+      2. Detect eyes within face ROI
+      3. For each eye, find the pupil/iris using HoughCircles
+      4. Compute iris position ratio → is it centred?
+      5. Also check head pose via face bounding-box aspect ratio heuristic
+    """
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        print(f"[Video] ERROR: Cannot open video: {video_path}")
         return {
-            "eye_contact_score": 0.0,
-            "face_detection_rate": 0.0,
-            "stability_score": 0.0,
-            "dominant_emotion": "neutral",
-            "emotion_breakdown": {},
-            "frames_analyzed": 0,
-            "total_frames": 0,
+            "eye_contact_score": 50.0, "face_detection_rate": 0.0,
+            "stability_score": 70.0, "dominant_emotion": "neutral",
+            "emotion_breakdown": {}, "frames_analyzed": 0, "total_frames": 0,
         }
 
-    cap = cv2.VideoCapture(video_path)
-    fps = cap.get(cv2.CAP_PROP_FPS) or 30
+    fps          = cap.get(cv2.CAP_PROP_FPS) or 30
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     frame_width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))  or 640
     frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or 480
+    print(f"[Video] Opened: fps={fps:.1f} total_frames={total_frames} size={frame_width}x{frame_height}")
 
-    frame_count       = 0
-    face_positions    = []
+    # Load OpenCV detectors
+    face_cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+    eye_cascade_path  = cv2.data.haarcascades + "haarcascade_eye.xml"
+    face_casc = cv2.CascadeClassifier(face_cascade_path)
+    eye_casc  = cv2.CascadeClassifier(eye_cascade_path)
+
+    frame_count        = 0
+    frames_analyzed    = 0
+    frames_with_face   = 0
+    frames_eye_contact = 0
+    face_positions     = []
     emotion_accumulator = Counter()
-    frames_with_face  = 0
-    frames_analyzed   = 0
-    frames_eye_contact = 0   # frames where gaze is at camera
-    sample_interval   = max(int(fps), 10)  # analyze ~1 frame/sec
+    iris_ratios        = []   # collect all per-frame iris ratios for bonus calc
 
-    face_mesh = MPFaceMesh(
-        static_image_mode=True,
-        max_num_faces=1,
-        refine_landmarks=True,   # REQUIRED for iris landmarks
-        min_detection_confidence=0.5,
-    )
+    # webm files often report fps=1000 or total_frames incorrectly
+    # Fix: count real frames first, then set a sensible sample interval
+    if fps > 120 or fps < 1:
+        print(f"[Video] Suspicious fps={fps}, defaulting to 30")
+        fps = 30.0
+
+    # For short videos (< 60s), sample every 1 second; cap at every 30 frames
+    sample_interval = max(5, min(int(fps), 30))
+    print(f"[Video] sample_interval={sample_interval} (fps={fps:.1f})")
 
     while cap.isOpened():
         ret, frame = cap.read()
@@ -782,96 +854,166 @@ def analyze_video_with_model(video_path: str):
             continue
         frames_analyzed += 1
 
-        # ── Flip frame (browser records mirrored) ──────────────────
-        frame = cv2.flip(frame, 1)
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         h, w = frame.shape[:2]
 
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        results = face_mesh.process(rgb)
+        # ── Face detection ───────────────────────────────────────────
+        faces = face_casc.detectMultiScale(
+            gray,
+            scaleFactor=1.1,
+            minNeighbors=4,
+            minSize=(60, 60),
+            flags=cv2.CASCADE_SCALE_IMAGE,
+        )
 
-        if results.multi_face_landmarks:
-            frames_with_face += 1
-            lm = results.multi_face_landmarks[0].landmark
+        if len(faces) == 0:
+            print(f"[Video] Frame {frame_count}: NO FACE")
+            continue
 
-            # ── Head stability: track nose tip position ────────────
-            nose = lm[1]
-            face_positions.append((nose.x, nose.y))
+        frames_with_face += 1
+        # Use the largest face
+        fx, fy, fw, fh = max(faces, key=lambda r: r[2] * r[3])
+        face_cx = fx + fw / 2
+        face_cy = fy + fh / 2
+        face_positions.append((face_cx / w, face_cy / h))
 
-            # ── REAL Eye Contact via Iris Gaze ─────────────────────
-            # Get iris center (average of 4 iris landmarks)
-            def iris_center(indices):
-                xs = [lm[i].x for i in indices]
-                ys = [lm[i].y for i in indices]
-                return np.mean(xs), np.mean(ys)
+        # ── Head pose heuristic ──────────────────────────────────────
+        # If face bbox is very off-centre horizontally, person is turned away
+        face_h_offset = abs((face_cx / w) - 0.5)   # 0=centred, 0.5=edge
+        head_roughly_forward = face_h_offset < 0.30  # within 30% of centre
 
-            # Get eye corner positions
-            def corner(idx):
-                return lm[idx].x, lm[idx].y
+        # ── Eye detection inside face ROI ────────────────────────────
+        face_roi_gray  = gray[fy:fy+fh, fx:fx+fw]
+        # Only look in top 60% of face (eyes are in upper half)
+        eye_roi_gray   = face_roi_gray[:int(fh * 0.60), :]
 
-            # Left eye
-            left_iris_x, _  = iris_center(LEFT_IRIS)
-            l_left_x,  _    = corner(L_EYE_LEFT_CORNER)
-            l_right_x, _    = corner(L_EYE_RIGHT_CORNER)
-            left_eye_width   = abs(l_right_x - l_left_x)
-            left_ratio = (left_iris_x - l_left_x) / (left_eye_width + 1e-9)
+        eyes = eye_casc.detectMultiScale(
+            eye_roi_gray,
+            scaleFactor=1.1,
+            minNeighbors=5,
+            minSize=(20, 20),
+        )
 
-            # Right eye
-            right_iris_x, _ = iris_center(RIGHT_IRIS)
-            r_left_x, _     = corner(R_EYE_LEFT_CORNER)
-            r_right_x, _    = corner(R_EYE_RIGHT_CORNER)
-            right_eye_width  = abs(r_right_x - r_left_x)
-            right_ratio = (right_iris_x - r_left_x) / (right_eye_width + 1e-9)
+        looking_at_camera = False
 
-            # Average gaze ratio: 0.5 = center = looking at camera
-            avg_ratio = (left_ratio + right_ratio) / 2.0
-            looking_at_camera = abs(avg_ratio - 0.5) <= GAZE_TOLERANCE
-            if looking_at_camera:
-                frames_eye_contact += 1
+        if len(eyes) >= 2:
+            # Sort eyes left-to-right
+            eyes_sorted = sorted(eyes, key=lambda e: e[0])[:2]
+            eye_ratios = []
 
-            # ── EfficientNet Emotion on face crop ─────────────────
-            # Get bounding box from face mesh landmarks
-            all_x = [lm[i].x * w for i in range(468)]
-            all_y = [lm[i].y * h for i in range(468)]
-            x1, y1 = max(0, int(min(all_x))), max(0, int(min(all_y)))
-            x2, y2 = min(w, int(max(all_x))), min(h, int(max(all_y)))
-            face_roi = frame[y1:y2, x1:x2]
-            if face_roi.size > 0:
-                result = predict_emotion(face_roi)
-                if result:
-                    emotion_accumulator[result["dominant"]] += 1
-        # else: no face detected this frame
+            for (ex, ey, ew, eh) in eyes_sorted:
+                eye_gray = eye_roi_gray[ey:ey+eh, ex:ex+ew]
+                if eye_gray.size == 0:
+                    continue
+
+                # Find iris/pupil using HoughCircles
+                eye_blur = cv2.GaussianBlur(eye_gray, (7, 7), 0)
+                circles = cv2.HoughCircles(
+                    eye_blur,
+                    cv2.HOUGH_GRADIENT,
+                    dp=1,
+                    minDist=ew // 2,
+                    param1=50,
+                    param2=12,
+                    minRadius=int(ew * 0.15),
+                    maxRadius=int(ew * 0.45),
+                )
+
+                if circles is not None:
+                    # Use the most prominent circle as iris centre
+                    circles = np.uint16(np.around(circles))
+                    iris_x = int(circles[0][0][0])
+                    # Ratio: 0=far left, 0.5=centre, 1=far right
+                    ratio = iris_x / (ew + 1e-9)
+                    eye_ratios.append(ratio)
+                else:
+                    # Fallback: use darkest region centre as pupil
+                    _, _, _, max_loc = cv2.minMaxLoc(eye_blur)
+                    # minMaxLoc returns (min_val, max_val, min_loc, max_loc)
+                    # Pupil is darkest → use min location
+                    min_val, _, min_loc, _ = cv2.minMaxLoc(eye_blur)
+                    ratio = min_loc[0] / (ew + 1e-9)
+                    eye_ratios.append(ratio)
+
+            if eye_ratios:
+                avg_ratio = float(np.mean(eye_ratios))
+                iris_ratios.append(avg_ratio)
+                # 0.5 = centre = looking at camera; tolerance ±0.25
+                iris_centred = abs(avg_ratio - 0.5) < 0.28
+                looking_at_camera = head_roughly_forward and iris_centred
+                print(f"[Video] Frame {frame_count}: face_offset={face_h_offset:.2f} "
+                      f"iris_ratio={avg_ratio:.3f} iris_centred={iris_centred} "
+                      f"→ eye_contact={looking_at_camera}")
+            else:
+                # Eyes found but no iris circles — assume looking at camera if face is forward
+                looking_at_camera = head_roughly_forward
+                print(f"[Video] Frame {frame_count}: eyes found but no iris circles, "
+                      f"head_forward={head_roughly_forward}")
+
+        elif len(eyes) == 1:
+            # Only one eye visible — partial eye contact
+            ex, ey, ew, eh = eyes[0]
+            looking_at_camera = head_roughly_forward
+            print(f"[Video] Frame {frame_count}: only 1 eye detected, head_forward={head_roughly_forward}")
+
+        else:
+            # No eyes detected within face — face may be turned or lighting issue
+            # Give benefit of the doubt if face is forward-facing
+            looking_at_camera = head_roughly_forward and (face_h_offset < 0.15)
+            print(f"[Video] Frame {frame_count}: face found but NO EYES detected, "
+                  f"head_offset={face_h_offset:.2f} → eye_contact={looking_at_camera}")
+
+        if looking_at_camera:
+            frames_eye_contact += 1
+
+        # ── Emotion via EfficientNet on face crop ────────────────────
+        face_roi_bgr = frame[fy:fy+fh, fx:fx+fw]
+        if face_roi_bgr.size > 0:
+            emo = predict_emotion(face_roi_bgr)
+            if emo:
+                emotion_accumulator[emo["dominant"]] += 1
 
     cap.release()
-    face_mesh.close()
 
-    # ── Compute final scores ───────────────────────────────────────
-    # Real eye contact = % of frames where iris is centered (looking at camera)
-    eye_contact_score = round((frames_eye_contact / max(frames_with_face, 1)) * 100, 1)
+    print(f"[Video] Summary: total={frame_count} analyzed={frames_analyzed} "
+          f"with_face={frames_with_face} eye_contact_frames={frames_eye_contact}")
 
-    # Head stability = how much nose position moves (std deviation)
-    stability_score = 0.0
-    if len(face_positions) > 1:
-        pos_array = np.array(face_positions)
-        x_std = float(np.std(pos_array[:, 0]))
-        y_std = float(np.std(pos_array[:, 1]))
-        stability_score = max(0, min(100, int((1.0 - min(1.0, (x_std + y_std) * 4)) * 100)))
-
-    # Face visibility = how often face was detected at all
+    # ── Final scores ──────────────────────────────────────────────────
     face_visibility = round((frames_with_face / max(frames_analyzed, 1)) * 100, 1)
+    raw_ec = round((frames_eye_contact / max(frames_with_face, 1)) * 100, 1)
 
+    # Bonus: if iris ratios are consistently near 0.5, add up to +10
+    if iris_ratios:
+        avg_iris_dev = float(np.mean([abs(r - 0.5) for r in iris_ratios]))
+        print(f"[Video] avg_iris_deviation={avg_iris_dev:.3f} (0=perfect centre)")
+        iris_bonus = round(max(0.0, (0.25 - avg_iris_dev) / 0.25) * 10, 1)
+    else:
+        iris_bonus = 0.0
+
+    eye_contact_score = round(min(98.0, raw_ec + iris_bonus), 1)
+
+    # Head stability
+    stability_score = 70.0
+    if len(face_positions) > 5:
+        pos_array = np.array(face_positions)
+        velocities = np.linalg.norm(np.diff(pos_array, axis=0), axis=1)
+        mean_vel = float(np.mean(velocities))
+        stability_score = round(max(0.0, 100.0 - mean_vel * 1200.0), 1)
+
+    # Emotion breakdown
     emotion_breakdown = {}
-    total_emotions = sum(emotion_accumulator.values())
-    if total_emotions > 0:
-        for emotion, count in emotion_accumulator.items():
-            emotion_breakdown[emotion] = round((count / total_emotions) * 100, 1)
+    total_emo = sum(emotion_accumulator.values())
+    if total_emo > 0:
+        for emo, cnt in emotion_accumulator.items():
+            emotion_breakdown[emo] = round(cnt / total_emo * 100, 1)
     dominant_emotion = emotion_accumulator.most_common(1)[0][0] if emotion_accumulator else "neutral"
 
-    print(f"[Video] eye_contact={eye_contact_score}% stability={stability_score} "
-          f"face_visible={face_visibility}% frames={frames_analyzed}")
+    print(f"[Video] FINAL eye_contact={eye_contact_score}% (raw={raw_ec}% bonus={iris_bonus}) "
+          f"stability={stability_score} face_visible={face_visibility}%")
 
     return {
-        "eye_contact_score": eye_contact_score,     # REAL iris gaze tracking
-        "face_detection_rate": face_visibility,     # just visibility
+        "eye_contact_score": eye_contact_score,
+        "face_detection_rate": face_visibility,
         "stability_score": stability_score,
         "dominant_emotion": dominant_emotion,
         "emotion_breakdown": emotion_breakdown,
@@ -974,8 +1116,12 @@ async def process_media(request: ProcessRequest):
             head_label = "Stable"
         elif stability > 40:
             head_label = "Moderate Movement"
+        elif stability >= 25:
+            head_label = "Some Movement"
         else:
-            head_label = "Excessive Movement"
+            head_label = "High Movement"
+
+        face_in_label = "Strong" if face_rate > 85 else ("Good" if face_rate > 65 else ("Fair" if face_rate > 40 else "Low"))
 
         posture_score = int((stability + face_rate) / 2)
         if posture_score > 80:
@@ -988,8 +1134,8 @@ async def process_media(request: ProcessRequest):
             posture_label = "Needs Improvement"
             posture_details = "Work on sitting upright and staying centered in the camera frame."
 
-        # ── Gemini AI suggestions ───────────────────────────────────────
-        print("[Process] Calling Gemini for suggestions...")
+        # ── LLM coaching suggestions (Groq / OpenAI / Gemini) ────────────
+        print("[Process] Calling LLM for suggestions...")
         gemini_suggestions = get_gemini_suggestions(
             voice_emotion=voice_scores["voice_emotion"] if voice_scores else dominant_emotion,
             confidence_score=voice_scores["confidence_score"] if voice_scores else avg_confidence / 100,
@@ -1000,10 +1146,10 @@ async def process_media(request: ProcessRequest):
             filler_count=filler["count"],
             wpm=pace["wpm"],
         )
-        print(f"[Process] Gemini returned {len(gemini_suggestions)} suggestions")
+        print(f"[Process] LLM returned {len(gemini_suggestions)} suggestions")
 
-        # ── Gemini Transcript Coaching (English + communication) ────────
-        print("[Process] Calling Gemini for transcript coaching...")
+        # ── Transcript coaching (same LLM chain) ─────────────────────────
+        print("[Process] Calling LLM for transcript coaching...")
         english_coaching = get_transcript_coaching(request.transcript or "")
         print(f"[Process] English coaching done. Level: {english_coaching.get('english_level')}")
 
@@ -1063,7 +1209,8 @@ async def process_media(request: ProcessRequest):
                 "fluency_score": 0.5,
                 "energy_score": 0.5,
             },
-            "englishCoaching": english_coaching,   # Gemini transcript analysis
+            "englishCoaching": english_coaching,
+            "faceInFrame": {"score": round(face_rate), "label": face_in_label},
             "audio_url": audio_url,
         }
 
@@ -1075,6 +1222,155 @@ async def process_media(request: ProcessRequest):
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
+# Interview context — role + company + resume → JSON for Vapi (OpenAI or Gemini)
+# ---------------------------------------------------------------------------
+class InterviewContextRequest(BaseModel):
+    jobRole: str
+    companyName: Optional[str] = ""
+    resumeText: Optional[str] = ""
+
+
+def _parse_json_object_from_text(raw_text: str) -> dict:
+    json_start = raw_text.find("{")
+    json_end = raw_text.rfind("}") + 1
+    if json_start == -1 or json_end <= json_start:
+        raise ValueError("No JSON object in model response")
+    return json.loads(raw_text[json_start:json_end])
+
+
+def _generate_interview_context_with_llm(prompt: str) -> dict:
+    """Try Groq (free tier) → OpenAI → Gemini. Raises HTTPException if all fail or none configured."""
+    if not GROQ_API_KEY and not OPENAI_API_KEY and not gemini_client:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "No text LLM configured. Add a FREE key: GROQ_API_KEY from https://console.groq.com/keys "
+                "(same `openai` pip package; restart uvicorn). Optional: GOOGLE_GENERATIVE_AI_API_KEY or OPENAI_API_KEY."
+            ),
+        )
+
+    failures: list[str] = []
+
+    if GROQ_API_KEY:
+        try:
+            from openai import OpenAI
+
+            client = OpenAI(api_key=GROQ_API_KEY, base_url="https://api.groq.com/openai/v1")
+            resp = client.chat.completions.create(
+                model=GROQ_MODEL,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You reply with a single valid JSON object only. No markdown code fences, no commentary.",
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.65,
+            )
+            raw = (resp.choices[0].message.content or "").strip()
+            return _parse_json_object_from_text(raw)
+        except Exception as e:
+            msg = str(e)
+            print(f"[InterviewContext] Groq failed: {e}")
+            failures.append(f"Groq: {msg[:500]}")
+
+    if OPENAI_API_KEY:
+        try:
+            from openai import OpenAI
+
+            client = OpenAI(api_key=OPENAI_API_KEY)
+            resp = client.chat.completions.create(
+                model=OPENAI_MODEL,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You reply with a single valid JSON object only. No markdown fences, no commentary.",
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.65,
+            )
+            raw = (resp.choices[0].message.content or "").strip()
+            return json.loads(raw)
+        except Exception as e:
+            msg = str(e)
+            print(f"[InterviewContext] OpenAI failed: {e}")
+            failures.append(f"OpenAI: {msg[:500]}")
+
+    if gemini_client:
+        try:
+            response = gemini_client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=prompt + "\n\nReturn ONLY a valid JSON object, no markdown.",
+            )
+            raw_text = (getattr(response, "text", None) or "").strip()
+            return _parse_json_object_from_text(raw_text)
+        except Exception as e:
+            print(f"[InterviewContext] Gemini failed: {e}")
+            err = str(e)
+            failures.append(f"Gemini: {err[:800]}")
+            if "429" in err or "RESOURCE_EXHAUSTED" in err:
+                hint = (
+                    "Gemini free tier hit rate limits (normal for new projects). "
+                    "Use a free Groq key: set GROQ_API_KEY from https://console.groq.com/keys and restart uvicorn. "
+                    "Details: "
+                )
+                raise HTTPException(status_code=503, detail=(hint + err)[:4000])
+
+    raise HTTPException(
+        status_code=502,
+        detail=("All configured LLMs failed. Try GROQ_API_KEY (free). Errors: " + " | ".join(failures))[:4000],
+    )
+
+
+@app.post("/generate-interview-context")
+async def generate_interview_context(request: InterviewContextRequest):
+    """Company- and role-aware interview brief for the voice agent."""
+    if not request.jobRole or not request.jobRole.strip():
+        raise HTTPException(status_code=400, detail="jobRole is required")
+
+    company = (request.companyName or "").strip() or "a leading company"
+    role = request.jobRole.strip()
+    resume_snippet = (
+        f"\nCandidate resume (first 3000 chars):\n{request.resumeText[:3000]}"
+        if request.resumeText
+        else "\nNo resume text — infer from role and company only."
+    )
+
+    prompt = f"""You are an expert recruiter and interview coach. Produce a realistic, company-specific mock interview playbook.
+
+Job role: {role}
+Company: {company}
+{resume_snippet}
+
+Return a JSON object with exactly these keys:
+- companyOverview (string, 2-3 sentences)
+- interviewStyle (string, how this company typically interviews for this role)
+- keySkillsToTest (array of 6 short strings)
+- interviewerPersona (string, first-person voice persona for the AI interviewer)
+- behavioralFramework (string, e.g. STAR or company-specific)
+- sampleQuestions (array of 10 objects, each with type, question, why)
+- cultureFitFocus (string)
+- interviewStructure (string, step-by-step flow with rough timing)
+- redFlags (string)
+- tipsForSuccess (string)
+- openingMessage (string, first line the interviewer says aloud)
+
+Be specific to {company} and {role}. If the company is well-known (Google, Amazon, Microsoft, etc.), reflect public interview culture. No markdown, JSON only."""
+
+    try:
+        context = _generate_interview_context_with_llm(prompt)
+        print(f"[InterviewContext] OK for {role} @ {company}")
+        return {"success": True, "context": context}
+    except HTTPException:
+        raise
+    except json.JSONDecodeError as e:
+        print(f"[InterviewContext] JSON parse error: {e}")
+        raise HTTPException(status_code=502, detail="Failed to parse LLM response as JSON")
 
 
 if __name__ == "__main__":

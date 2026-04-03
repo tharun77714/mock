@@ -12,6 +12,7 @@ python-multipart
 Pillow
 mediapipe
 google-genai
+openai>=1.30.0
 
 # --- PyTorch stack ---
 torch

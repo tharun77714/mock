@@ -4,7 +4,7 @@ import React from 'react';
 import Link from 'next/link';
 import { useSession, signIn, signOut } from 'next-auth/react';
 import { Button } from './ui/Button';
-import { LayoutDashboard, LogOut, User as UserIcon } from 'lucide-react';
+import { LayoutDashboard, LogOut, User as UserIcon, FileText } from 'lucide-react';
 import { motion } from 'framer-motion';
 
 export const Navbar = () => {
@@ -39,6 +39,15 @@ export const Navbar = () => {
                 >
                   <LayoutDashboard className="h-4 w-4" />
                   <span>Dashboard</span>
+                </motion.div>
+              </Link>
+              <Link href="/resume">
+                <motion.div
+                  whileHover={{ y: -1 }}
+                  className="flex items-center space-x-2 text-sm font-medium text-slate-400 hover:text-white transition-colors"
+                >
+                  <FileText className="h-4 w-4" />
+                  <span>Resume Analyzer</span>
                 </motion.div>
               </Link>
               <div className="h-4 w-px bg-slate-800" />

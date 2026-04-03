@@ -104,6 +104,7 @@ export async function POST(req: NextRequest) {
           communication: analysis.communication,
           suggestions: analysis.suggestions,
           eyeContact: analysis.eyeContact,
+          faceInFrame: analysis.faceInFrame,
           posture: analysis.posture,
           headStability: analysis.headStability,
           facialExpression: analysis.facialExpression,

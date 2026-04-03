@@ -57,6 +57,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+from routers.resume import resume_router
+app.include_router(resume_router, prefix="/api")
+
 # ---------------------------------------------------------------------------
 # Gemini Setup
 # ---------------------------------------------------------------------------

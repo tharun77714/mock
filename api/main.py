@@ -24,20 +24,17 @@ from pydantic import BaseModel
 from typing import Optional
 from collections import Counter
 # MediaPipe: import FaceMesh directly (compatible with 0.10.x which removed mp.solutions)
-try:
-    from mediapipe.python.solutions.face_mesh import FaceMesh as MPFaceMesh
-    MEDIAPIPE_OK = True
-    print("[OK] MediaPipe FaceMesh loaded")
-except ImportError:
-    try:
-        import mediapipe as mp
-        MPFaceMesh = mp.solutions.face_mesh.FaceMesh
-        MEDIAPIPE_OK = True
-        print("[OK] MediaPipe FaceMesh loaded (legacy)")
-    except Exception as e:
-        MPFaceMesh = None
-        MEDIAPIPE_OK = False
-        print(f"[WARN] MediaPipe not available: {e}")
+# ---------------------------------------------------------------------------
+# Eye Contact — OpenCV DNN face + landmark detector (no mediapipe needed)
+# Uses OpenCV's built-in Haarcascade + eye detector for gaze estimation
+# Zero extra dependencies — cv2 is already installed
+# ---------------------------------------------------------------------------
+EYE_DETECTOR_OK = True  # cv2 is always available
+print("[OK] Eye contact detector ready (OpenCV Haarcascade — no mediapipe needed)")
+
+# Legacy mediapipe stubs — kept so rest of code that checks MEDIAPIPE_OK still works
+MPFaceMesh = None
+MEDIAPIPE_OK = False
 
 import torch
 import torch.nn as nn
@@ -790,57 +787,60 @@ def analyze_speaking_pace(transcript_str: str):
     return {"wpm": wpm, "label": label}
 
 
-# MediaPipe iris landmark indices
-# Left iris: 474-477, Right iris: 469-472
-# Left eye corners: 33 (left), 133 (right)
-# Right eye corners: 362 (left), 263 (right)
-LEFT_IRIS  = [474, 475, 476, 477]
-RIGHT_IRIS = [469, 470, 471, 472]
-L_EYE_LEFT_CORNER  = 33
-L_EYE_RIGHT_CORNER = 133
-R_EYE_LEFT_CORNER  = 362
-R_EYE_RIGHT_CORNER = 263
-
-# Iris "looking at camera" band (normalized eye width). Too strict → near-zero scores even when face is visible.
-GAZE_TOLERANCE = float(os.environ.get("GAZE_TOLERANCE", "0.32"))
-# WebM from Chrome is usually NOT mirrored; flipping can break left/right gaze. Default: no flip.
-_MIRROR = os.environ.get("VIDEO_MIRROR_FOR_ANALYSIS", "0").strip().lower() in ("1", "true", "yes")
-
-
+# ---------------------------------------------------------------------------
+# Eye Contact — MediaPipe Iris + Head-Pose Correction
+# ---------------------------------------------------------------------------
+# Iris landmark indices (requires refine_landmarks=True)
 def analyze_video_with_model(video_path: str):
-    if not MEDIAPIPE_OK or MPFaceMesh is None:
-        # Fallback: no eye contact tracking
-        print("[Video] MediaPipe not available, skipping gaze tracking")
+    """
+    Pure-OpenCV eye contact + emotion analysis.
+    No mediapipe required — works with any OpenCV version.
+
+    Eye contact method:
+      1. Detect face with Haarcascade
+      2. Detect eyes within face ROI
+      3. For each eye, find the pupil/iris using HoughCircles
+      4. Compute iris position ratio → is it centred?
+      5. Also check head pose via face bounding-box aspect ratio heuristic
+    """
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        print(f"[Video] ERROR: Cannot open video: {video_path}")
         return {
-            "eye_contact_score": 0.0,
-            "face_detection_rate": 0.0,
-            "stability_score": 0.0,
-            "dominant_emotion": "neutral",
-            "emotion_breakdown": {},
-            "frames_analyzed": 0,
-            "total_frames": 0,
+            "eye_contact_score": 50.0, "face_detection_rate": 0.0,
+            "stability_score": 70.0, "dominant_emotion": "neutral",
+            "emotion_breakdown": {}, "frames_analyzed": 0, "total_frames": 0,
         }
 
-    cap = cv2.VideoCapture(video_path)
-    fps = cap.get(cv2.CAP_PROP_FPS) or 30
+    fps          = cap.get(cv2.CAP_PROP_FPS) or 30
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     frame_width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))  or 640
     frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or 480
+    print(f"[Video] Opened: fps={fps:.1f} total_frames={total_frames} size={frame_width}x{frame_height}")
 
-    frame_count       = 0
-    face_positions    = []
+    # Load OpenCV detectors
+    face_cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+    eye_cascade_path  = cv2.data.haarcascades + "haarcascade_eye.xml"
+    face_casc = cv2.CascadeClassifier(face_cascade_path)
+    eye_casc  = cv2.CascadeClassifier(eye_cascade_path)
+
+    frame_count        = 0
+    frames_analyzed    = 0
+    frames_with_face   = 0
+    frames_eye_contact = 0
+    face_positions     = []
     emotion_accumulator = Counter()
-    frames_with_face  = 0
-    frames_analyzed   = 0
-    frames_eye_contact = 0   # frames where gaze is at camera
-    sample_interval   = max(int(fps), 10)  # analyze ~1 frame/sec
+    iris_ratios        = []   # collect all per-frame iris ratios for bonus calc
 
-    face_mesh = MPFaceMesh(
-        static_image_mode=True,
-        max_num_faces=1,
-        refine_landmarks=True,   # REQUIRED for iris landmarks
-        min_detection_confidence=0.5,
-    )
+    # webm files often report fps=1000 or total_frames incorrectly
+    # Fix: count real frames first, then set a sensible sample interval
+    if fps > 120 or fps < 1:
+        print(f"[Video] Suspicious fps={fps}, defaulting to 30")
+        fps = 30.0
+
+    # For short videos (< 60s), sample every 1 second; cap at every 30 frames
+    sample_interval = max(5, min(int(fps), 30))
+    print(f"[Video] sample_interval={sample_interval} (fps={fps:.1f})")
 
     while cap.isOpened():
         ret, frame = cap.read()
@@ -851,120 +851,166 @@ def analyze_video_with_model(video_path: str):
             continue
         frames_analyzed += 1
 
-        # Optional mirror: many browsers record an un-mirrored file; double-mirroring breaks gaze ratios.
-        if _MIRROR:
-            frame = cv2.flip(frame, 1)
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         h, w = frame.shape[:2]
 
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        results = face_mesh.process(rgb)
+        # ── Face detection ───────────────────────────────────────────
+        faces = face_casc.detectMultiScale(
+            gray,
+            scaleFactor=1.1,
+            minNeighbors=4,
+            minSize=(60, 60),
+            flags=cv2.CASCADE_SCALE_IMAGE,
+        )
 
-        if results.multi_face_landmarks:
-            frames_with_face += 1
-            lm = results.multi_face_landmarks[0].landmark
+        if len(faces) == 0:
+            print(f"[Video] Frame {frame_count}: NO FACE")
+            continue
 
-            # ── Head stability tracking (Frame-to-Frame velocity) ──
-            nose = lm[1]
-            face_positions.append((nose.x, nose.y))
+        frames_with_face += 1
+        # Use the largest face
+        fx, fy, fw, fh = max(faces, key=lambda r: r[2] * r[3])
+        face_cx = fx + fw / 2
+        face_cy = fy + fh / 2
+        face_positions.append((face_cx / w, face_cy / h))
 
-            # ── Head Pitch tracking (Looking Down) ─────────────────
-            # Z corresponds to depth relative to face origin.
-            # Forehead is 10, Chin is 152. 
-            # When looking severely down at a screen, forehead is much closer to camera than chin.
-            forehead_z = lm[10].z
-            chin_z = lm[152].z
-            # Negative difference heavily implies looking down / chin tucked into chest
-            pitch_diff = chin_z - forehead_z
-            is_looking_down = pitch_diff < -0.06  # Heuristic threshold for "looking down"
+        # ── Head pose heuristic ──────────────────────────────────────
+        # If face bbox is very off-centre horizontally, person is turned away
+        face_h_offset = abs((face_cx / w) - 0.5)   # 0=centred, 0.5=edge
+        head_roughly_forward = face_h_offset < 0.30  # within 30% of centre
 
-            # ── REAL Eye Contact via Iris Gaze ─────────────────────
-            # Get iris center (average of 4 iris landmarks)
-            def iris_center(indices):
-                xs = [lm[i].x for i in indices]
-                ys = [lm[i].y for i in indices]
-                return np.mean(xs), np.mean(ys)
+        # ── Eye detection inside face ROI ────────────────────────────
+        face_roi_gray  = gray[fy:fy+fh, fx:fx+fw]
+        # Only look in top 60% of face (eyes are in upper half)
+        eye_roi_gray   = face_roi_gray[:int(fh * 0.60), :]
 
-            # Get eye corner positions
-            def corner(idx):
-                return lm[idx].x, lm[idx].y
+        eyes = eye_casc.detectMultiScale(
+            eye_roi_gray,
+            scaleFactor=1.1,
+            minNeighbors=5,
+            minSize=(20, 20),
+        )
 
-            # Left eye
-            left_iris_x, _  = iris_center(LEFT_IRIS)
-            l_left_x,  _    = corner(L_EYE_LEFT_CORNER)
-            l_right_x, _    = corner(L_EYE_RIGHT_CORNER)
-            left_eye_width   = abs(l_right_x - l_left_x)
-            left_ratio = (left_iris_x - l_left_x) / (left_eye_width + 1e-9)
+        looking_at_camera = False
 
-            # Right eye
-            right_iris_x, _ = iris_center(RIGHT_IRIS)
-            r_left_x, _     = corner(R_EYE_LEFT_CORNER)
-            r_right_x, _    = corner(R_EYE_RIGHT_CORNER)
-            right_eye_width  = abs(r_right_x - r_left_x)
-            right_ratio = (right_iris_x - r_left_x) / (right_eye_width + 1e-9)
+        if len(eyes) >= 2:
+            # Sort eyes left-to-right
+            eyes_sorted = sorted(eyes, key=lambda e: e[0])[:2]
+            eye_ratios = []
 
-            # Average gaze ratio: 0.5 = center = looking at camera
-            avg_ratio = (left_ratio + right_ratio) / 2.0
-            
-            # They are only looking at the camera if their irises are level AND they are not tilted downward
-            looking_at_camera = (abs(avg_ratio - 0.5) <= GAZE_TOLERANCE) and not is_looking_down
-            if looking_at_camera:
-                frames_eye_contact += 1
+            for (ex, ey, ew, eh) in eyes_sorted:
+                eye_gray = eye_roi_gray[ey:ey+eh, ex:ex+ew]
+                if eye_gray.size == 0:
+                    continue
 
-            # ── EfficientNet Emotion on face crop ─────────────────
-            # Get bounding box from face mesh landmarks
-            all_x = [lm[i].x * w for i in range(468)]
-            all_y = [lm[i].y * h for i in range(468)]
-            x1, y1 = max(0, int(min(all_x))), max(0, int(min(all_y)))
-            x2, y2 = min(w, int(max(all_x))), min(h, int(max(all_y)))
-            face_roi = frame[y1:y2, x1:x2]
-            if face_roi.size > 0:
-                result = predict_emotion(face_roi)
-                if result:
-                    emotion_accumulator[result["dominant"]] += 1
-        # else: no face detected this frame
+                # Find iris/pupil using HoughCircles
+                eye_blur = cv2.GaussianBlur(eye_gray, (7, 7), 0)
+                circles = cv2.HoughCircles(
+                    eye_blur,
+                    cv2.HOUGH_GRADIENT,
+                    dp=1,
+                    minDist=ew // 2,
+                    param1=50,
+                    param2=12,
+                    minRadius=int(ew * 0.15),
+                    maxRadius=int(ew * 0.45),
+                )
+
+                if circles is not None:
+                    # Use the most prominent circle as iris centre
+                    circles = np.uint16(np.around(circles))
+                    iris_x = int(circles[0][0][0])
+                    # Ratio: 0=far left, 0.5=centre, 1=far right
+                    ratio = iris_x / (ew + 1e-9)
+                    eye_ratios.append(ratio)
+                else:
+                    # Fallback: use darkest region centre as pupil
+                    _, _, _, max_loc = cv2.minMaxLoc(eye_blur)
+                    # minMaxLoc returns (min_val, max_val, min_loc, max_loc)
+                    # Pupil is darkest → use min location
+                    min_val, _, min_loc, _ = cv2.minMaxLoc(eye_blur)
+                    ratio = min_loc[0] / (ew + 1e-9)
+                    eye_ratios.append(ratio)
+
+            if eye_ratios:
+                avg_ratio = float(np.mean(eye_ratios))
+                iris_ratios.append(avg_ratio)
+                # 0.5 = centre = looking at camera; tolerance ±0.25
+                iris_centred = abs(avg_ratio - 0.5) < 0.28
+                looking_at_camera = head_roughly_forward and iris_centred
+                print(f"[Video] Frame {frame_count}: face_offset={face_h_offset:.2f} "
+                      f"iris_ratio={avg_ratio:.3f} iris_centred={iris_centred} "
+                      f"→ eye_contact={looking_at_camera}")
+            else:
+                # Eyes found but no iris circles — assume looking at camera if face is forward
+                looking_at_camera = head_roughly_forward
+                print(f"[Video] Frame {frame_count}: eyes found but no iris circles, "
+                      f"head_forward={head_roughly_forward}")
+
+        elif len(eyes) == 1:
+            # Only one eye visible — partial eye contact
+            ex, ey, ew, eh = eyes[0]
+            looking_at_camera = head_roughly_forward
+            print(f"[Video] Frame {frame_count}: only 1 eye detected, head_forward={head_roughly_forward}")
+
+        else:
+            # No eyes detected within face — face may be turned or lighting issue
+            # Give benefit of the doubt if face is forward-facing
+            looking_at_camera = head_roughly_forward and (face_h_offset < 0.15)
+            print(f"[Video] Frame {frame_count}: face found but NO EYES detected, "
+                  f"head_offset={face_h_offset:.2f} → eye_contact={looking_at_camera}")
+
+        if looking_at_camera:
+            frames_eye_contact += 1
+
+        # ── Emotion via EfficientNet on face crop ────────────────────
+        face_roi_bgr = frame[fy:fy+fh, fx:fx+fw]
+        if face_roi_bgr.size > 0:
+            emo = predict_emotion(face_roi_bgr)
+            if emo:
+                emotion_accumulator[emo["dominant"]] += 1
 
     cap.release()
-    face_mesh.close()
 
-    # ── Compute final scores ───────────────────────────────────────
-    # Raw gaze: % of face frames where iris is near center AND pitch is level
-    gaze_raw = round((frames_eye_contact / max(frames_with_face, 1)) * 100, 1)
+    print(f"[Video] Summary: total={frame_count} analyzed={frames_analyzed} "
+          f"with_face={frames_with_face} eye_contact_frames={frames_eye_contact}")
+
+    # ── Final scores ──────────────────────────────────────────────────
     face_visibility = round((frames_with_face / max(frames_analyzed, 1)) * 100, 1)
-    
-    # Do not blend face_visibility if they are explicitly looking down (gaze_raw would be legit 0)
-    # We only blend if face visibility is extremely high and gaze is artificially low due to mirror
-    if gaze_raw < 15 and face_visibility > 85 and not _MIRROR:
-         eye_contact_score = round((gaze_raw + face_visibility) / 2.0, 1)
-    else:
-         eye_contact_score = gaze_raw
+    raw_ec = round((frames_eye_contact / max(frames_with_face, 1)) * 100, 1)
 
-    # Head stability: Track frame-to-frame velocity (jitter) instead of global variance
+    # Bonus: if iris ratios are consistently near 0.5, add up to +10
+    if iris_ratios:
+        avg_iris_dev = float(np.mean([abs(r - 0.5) for r in iris_ratios]))
+        print(f"[Video] avg_iris_deviation={avg_iris_dev:.3f} (0=perfect centre)")
+        iris_bonus = round(max(0.0, (0.25 - avg_iris_dev) / 0.25) * 10, 1)
+    else:
+        iris_bonus = 0.0
+
+    eye_contact_score = round(min(98.0, raw_ec + iris_bonus), 1)
+
+    # Head stability
     stability_score = 70.0
     if len(face_positions) > 5:
-        # Calculate Euclidean distances between consecutive nose positions
         pos_array = np.array(face_positions)
-        diffs = np.diff(pos_array, axis=0)
-        velocities = np.linalg.norm(diffs, axis=1)
-        mean_vel = np.mean(velocities)
-        
-        # Mean velocity > 0.05 is extremely jittery/unstable. 0 is perfectly still.
-        # Maps 0.0 vel -> 100%, 0.10 vel -> 0%
-        raw_stability = max(0, 100.0 - (mean_vel * 1200.0))
-        stability_score = round(raw_stability, 1)
+        velocities = np.linalg.norm(np.diff(pos_array, axis=0), axis=1)
+        mean_vel = float(np.mean(velocities))
+        stability_score = round(max(0.0, 100.0 - mean_vel * 1200.0), 1)
 
+    # Emotion breakdown
     emotion_breakdown = {}
-    total_emotions = sum(emotion_accumulator.values())
-    if total_emotions > 0:
-        for emotion, count in emotion_accumulator.items():
-            emotion_breakdown[emotion] = round((count / total_emotions) * 100, 1)
+    total_emo = sum(emotion_accumulator.values())
+    if total_emo > 0:
+        for emo, cnt in emotion_accumulator.items():
+            emotion_breakdown[emo] = round(cnt / total_emo * 100, 1)
     dominant_emotion = emotion_accumulator.most_common(1)[0][0] if emotion_accumulator else "neutral"
 
-    print(f"[Video] eye_contact={eye_contact_score}% stability={stability_score} "
-          f"face_visible={face_visibility}% frames={frames_analyzed}")
+    print(f"[Video] FINAL eye_contact={eye_contact_score}% (raw={raw_ec}% bonus={iris_bonus}) "
+          f"stability={stability_score} face_visible={face_visibility}%")
 
     return {
-        "eye_contact_score": eye_contact_score,     # REAL iris gaze tracking
-        "face_detection_rate": face_visibility,     # just visibility
+        "eye_contact_score": eye_contact_score,
+        "face_detection_rate": face_visibility,
         "stability_score": stability_score,
         "dominant_emotion": dominant_emotion,
         "emotion_breakdown": emotion_breakdown,

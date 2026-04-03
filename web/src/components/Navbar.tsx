@@ -77,8 +77,8 @@ export const Navbar = () => {
             </div>
           ) : (
             <motion.div whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}>
-              <Button onClick={() => signIn('google')} size="sm" className="shadow-lg shadow-indigo-500/20">
-                Sign In
+              <Button onClick={() => signIn()} size="sm" className="shadow-lg shadow-indigo-500/20">
+                Sign In / Sign Up
               </Button>
             </motion.div>
           )}

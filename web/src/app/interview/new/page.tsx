@@ -65,7 +65,7 @@ function buildPersonalizedAssistant(
   const systemPrompt = context
     ? `${context.interviewerPersona}
 
-You are running a mock interview for ${role} at ${company}.
+You are running a mock interview for ${role} at ${company}. You are a SENIOR interviewer. Do NOT act like a generic chatbot.
 
 === COMPANY ===
 ${context.companyOverview}
@@ -83,13 +83,22 @@ ${context.interviewStructure}
 === QUESTION BANK (adapt, do not read verbatim) ===
 ${context.sampleQuestions.map((q, i) => `${i + 1}. [${q.type}] ${q.question}`).join("\n")}
 
-Rules: Your first spoken line must match this (verbatim): ${JSON.stringify(context.openingMessage)}
-8–10 questions total; reference resume facts when present; concise questions; professional tone.`
+CRITICAL INTERVIEW GUIDELINES:
+1. First spoken line must match this (verbatim): ${JSON.stringify(context.openingMessage)}
+2. DO NOT just say "Great answer" and immediately ask the next distinct question.
+3. CRITIQUE and PUSH BACK: If an answer is shallow, challenge them. ("That makes sense for a small app, but how would you handle 10 million concurrent users?", or "What's the tradeoff of that approach?")
+4. Acknowledge what they said specifically, offer a tiny piece of feedback, then smoothly transition.
+5. Limit to 8–10 total distinct questions throughout the session, but use aggressive follow-ups if they give weak answers.`
     : `You are a senior interviewer at ${company} hiring for ${role}.
 
 ${resumeBlock}
 
-Conduct a realistic mock interview: welcome, intro, then 8–10 questions mixing technical, behavioral, and resume deep-dives for ${role}. Sound like this company’s style would — structured, professional. End by asking if they have questions for you.`;
+CRITICAL INSTRUCTIONS:
+- You are a STRICT, SENIOR technical interviewer. Conduct a realistic mock interview.
+- Start by welcoming them and asking for a brief intro.
+- DO NOT just say "Great answer" and move to the next topic. 
+- You MUST evaluate their answers. If they give a superficial answer, PUSH BACK ("Can you go deeper into the exact architecture?", or "What are the edge cases there?").
+- Ask 8-10 targeted questions. Be professional, push for depth, and sound exactly like a hiring manager at a real tech company.`;
 
   const firstMessage =
     context?.openingMessage ||
@@ -100,36 +109,35 @@ Conduct a realistic mock interview: welcome, intro, then 8–10 questions mixing
     firstMessage,
     model: {
       provider: "openai" as const,
-      model: "gpt-4o-mini",
+      model: "gpt-4o",
       messages: [{ role: "system" as const, content: systemPrompt }],
-      temperature: 0.75,
+      temperature: 0.6,
     },
     voice: {
       provider: "11labs" as const,
       voiceId: "21m00Tcm4TlvDq8ikWAM",
     },
-    silenceTimeoutSeconds: 30,
+    clientMessages: ["transcript", "hangup", "speech-update"],
+    silenceTimeoutSeconds: 60,
     maxDurationSeconds: 1800,
   };
 }
 
 function buildResumeAssistant(resumeText: string) {
-  const systemPrompt = `You are a senior technical interviewer conducting a professional mock interview. You have access to the candidate's resume below.
+  const systemPrompt = `You are a strict, senior-level interviewer conducting a professional mock interview. You have access to the candidate's resume below.
 
 === CANDIDATE RESUME ===
 ${resumeText.slice(0, 6000)}
 === END RESUME ===
 
-INSTRUCTIONS:
+CRITICAL INSTRUCTIONS:
 - Start by welcoming the candidate, then ask them to briefly introduce themselves.
-- Ask 8-10 targeted questions based on their resume: projects they listed, skills they claim, past experience, education.
-- Mix behavioral questions ("Tell me about a time when...") with technical questions relevant to their listed skills.
-- If they mention specific technologies (Python, React, ML, etc.), ask deeper follow-up questions about those.
-- Be conversational but professional — like a real interviewer at a top company.
-- Give brief encouraging acknowledgments between questions ("Great, thanks for sharing that.").
-- After all questions, wrap up by asking if they have any questions for you.
-- Keep each question concise (1-2 sentences max).
-- Do NOT read back the entire resume. Reference specifics naturally ("I see you worked on X project...").`;
+- Ask 8-10 targeted questions based strictly on the specifics in their resume (projects, skills, past experience).
+- DO NOT just say "Great" and move on. You MUST act like a real engineering manager. 
+- PUSH BACK: If they mention using "React" or "Python" or "AWS", grill them on it. Ask about tradeoffs, scaling, edge cases, or what the hardest bug was in the project they listed.
+- If their answer is vague, say: "That's a bit high-level. Can you walk me through the exact technical implementation?"
+- Keep your questions and responses concise (1-3 sentences max) but ruthless and professional.
+- After all questions are exhausted, ask if they have any questions for you.`;
 
   return {
     name: "MockMate Resume Interviewer",
@@ -137,15 +145,16 @@ INSTRUCTIONS:
       "Hi there! Thanks for joining this mock interview session. I've had a chance to review your resume, and I'm excited to learn more about your background. Let's get started — could you give me a quick introduction about yourself?",
     model: {
       provider: "openai" as const,
-      model: "gpt-4o-mini",
+      model: "gpt-4o",
       messages: [{ role: "system" as const, content: systemPrompt }],
-      temperature: 0.7,
+      temperature: 0.6,
     },
     voice: {
       provider: "11labs" as const,
       voiceId: "21m00Tcm4TlvDq8ikWAM",
     },
-    silenceTimeoutSeconds: 30,
+    clientMessages: ["transcript", "hangup", "speech-update"],
+    silenceTimeoutSeconds: 60,
     maxDurationSeconds: 1200,
   };
 }

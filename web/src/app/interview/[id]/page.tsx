@@ -105,6 +105,10 @@ export default function SummaryPage() {
   );
 
   const a = data.analysis || {};
+  const looksLikePlaceholderVoice =
+    a?.voiceAnalysis &&
+    [a.voiceAnalysis.confidence_score, a.voiceAnalysis.pitch_score, a.voiceAnalysis.fluency_score, a.voiceAnalysis.energy_score]
+      .every((v: any) => typeof v === 'number' && Math.abs(v - 0.5) < 0.0001);
   const transcriptMessages = (() => {
     try { return JSON.parse(data.transcript); } catch { return null; }
   })();
@@ -200,7 +204,7 @@ export default function SummaryPage() {
             </div>
 
             {/* Voice Analysis — CNN+BiLSTM */}
-            {a.voiceAnalysis && (
+            {a.voiceAnalysis && !looksLikePlaceholderVoice && (
               <section className="p-6 rounded-3xl bg-gradient-to-br from-purple-500/10 to-indigo-500/10 border border-purple-500/20">
                 <h3 className="text-lg font-bold text-white mb-5 flex items-center gap-2">
                   <Mic className="h-5 w-5 text-purple-400" />

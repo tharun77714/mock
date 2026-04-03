@@ -28,7 +28,7 @@ export const authOptions: NextAuthOptions = {
 
         // --- Guest Login ---
         // Validated against a server-side secret so clients can't spoof this
-        if (credentials?.isGuest === process.env.GUEST_SECRET) {
+        if (process.env.GUEST_SECRET && credentials?.isGuest === process.env.GUEST_SECRET) {
           return {
             id: "guest_" + Math.random().toString(36).substr(2, 9),
             name: "Guest User",

@@ -4,6 +4,7 @@ import { useSession } from 'next-auth/react';
 import { Navbar } from '@/components/Navbar';
 import { LandingHero } from '@/components/LandingHero';
 import DashboardContent from '@/components/DashboardContent';
+import { motion } from 'framer-motion';
 
 export default function Home() {
   const { data: session, status } = useSession();
@@ -17,7 +18,12 @@ export default function Home() {
   }
 
   return (
-    <main className="flex min-h-screen flex-col bg-slate-950">
+    <motion.main
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.45, ease: 'easeOut' }}
+      className="relative flex min-h-screen flex-col bg-transparent"
+    >
       <Navbar />
       {session ? (
         <DashboardContent user={session.user} />
@@ -26,6 +32,6 @@ export default function Home() {
           <LandingHero />
         </>
       )}
-    </main>
+    </motion.main>
   );
 }

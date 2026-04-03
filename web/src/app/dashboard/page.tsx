@@ -5,6 +5,7 @@ import { Navbar } from '@/components/Navbar';
 import DashboardContent from '@/components/DashboardContent';
 import { useRouter } from 'next/navigation';
 import { useEffect } from 'react';
+import { motion } from 'framer-motion';
 
 export default function DashboardPage() {
   const { data: session, status } = useSession();
@@ -25,9 +26,14 @@ export default function DashboardPage() {
   if (!session) return null;
 
   return (
-    <main className="flex min-h-screen flex-col bg-slate-950">
+    <motion.main
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.45, ease: 'easeOut' }}
+      className="relative flex min-h-screen flex-col bg-transparent"
+    >
       <Navbar />
       <DashboardContent user={session.user} />
-    </main>
+    </motion.main>
   );
 }

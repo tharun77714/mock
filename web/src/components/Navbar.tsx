@@ -4,7 +4,7 @@ import React from 'react';
 import Link from 'next/link';
 import { useSession, signIn, signOut } from 'next-auth/react';
 import { Button } from './ui/Button';
-import { LayoutDashboard, LogOut, User as UserIcon, FileText } from 'lucide-react';
+import { LayoutDashboard, LogOut, User as UserIcon, FileText, Target } from 'lucide-react';
 import { motion } from 'framer-motion';
 
 export const Navbar = () => {
@@ -15,14 +15,14 @@ export const Navbar = () => {
       initial={{ y: -20, opacity: 0 }}
       animate={{ y: 0, opacity: 1 }}
       transition={{ duration: 0.4 }}
-      className="sticky top-0 z-50 w-full border-b border-white/5 bg-slate-950/60 backdrop-blur-2xl"
+      className="sticky top-0 z-50 w-full border-b border-slate-700/40 bg-slate-950/65 backdrop-blur-2xl"
     >
       <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-4 sm:px-6 lg:px-8">
         <Link href="/" className="flex items-center space-x-2 group">
           <motion.div
-            whileHover={{ scale: 1.1, rotate: 5 }}
-            whileTap={{ scale: 0.9 }}
-            className="h-8 w-8 rounded-lg bg-gradient-to-br from-indigo-500 to-blue-600 flex items-center justify-center shadow-lg shadow-indigo-500/30"
+            whileHover={{ scale: 1.05 }}
+            whileTap={{ scale: 0.98 }}
+            className="h-8 w-8 rounded-lg bg-gradient-to-br from-indigo-500 to-cyan-500 flex items-center justify-center shadow-lg shadow-indigo-500/20"
           >
             <span className="text-lg font-bold text-white">M</span>
           </motion.div>
@@ -35,19 +35,28 @@ export const Navbar = () => {
               <Link href="/dashboard">
                 <motion.div
                   whileHover={{ y: -1 }}
-                  className="flex items-center space-x-2 text-sm font-medium text-slate-400 hover:text-white transition-colors"
+                  className="flex items-center space-x-2 text-sm font-medium text-slate-400 hover:text-cyan-100 transition-colors"
                 >
                   <LayoutDashboard className="h-4 w-4" />
                   <span>Dashboard</span>
                 </motion.div>
               </Link>
-              <Link href="/resume">
+              <Link href="/resume-builder">
                 <motion.div
                   whileHover={{ y: -1 }}
-                  className="flex items-center space-x-2 text-sm font-medium text-slate-400 hover:text-white transition-colors"
+                  className="flex items-center space-x-2 text-sm font-medium text-slate-400 hover:text-cyan-100 transition-colors"
                 >
                   <FileText className="h-4 w-4" />
-                  <span>Resume Analyzer</span>
+                  <span>Resume Builder</span>
+                </motion.div>
+              </Link>
+              <Link href="/resume-matcher">
+                <motion.div
+                  whileHover={{ y: -1 }}
+                  className="flex items-center space-x-2 text-sm font-medium text-slate-400 hover:text-cyan-100 transition-colors"
+                >
+                  <Target className="h-4 w-4" />
+                  <span>Resume Matcher</span>
                 </motion.div>
               </Link>
               <div className="h-4 w-px bg-slate-800" />

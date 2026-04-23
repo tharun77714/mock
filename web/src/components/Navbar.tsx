@@ -4,13 +4,16 @@ import React from 'react';
 import Link from 'next/link';
 import { useSession, signIn, signOut } from 'next-auth/react';
 import { Button } from './ui/Button';
-import { LayoutDashboard, LogOut, User as UserIcon, FileText, Target } from 'lucide-react';
+import { LayoutDashboard, LogOut, User as UserIcon, FileText } from 'lucide-react';
 import { motion } from 'framer-motion';
+import { StudentProfileModal } from './StudentProfileModal';
 
 export const Navbar = () => {
   const { data: session } = useSession();
+  const [isProfileModalOpen, setIsProfileModalOpen] = React.useState(false);
 
   return (
+    <>
     <motion.nav
       initial={{ y: -20, opacity: 0 }}
       animate={{ y: 0, opacity: 1 }}
@@ -50,15 +53,6 @@ export const Navbar = () => {
                   <span>Resume Builder</span>
                 </motion.div>
               </Link>
-              <Link href="/resume-matcher">
-                <motion.div
-                  whileHover={{ y: -1 }}
-                  className="flex items-center space-x-2 text-sm font-medium text-slate-400 hover:text-cyan-100 transition-colors"
-                >
-                  <Target className="h-4 w-4" />
-                  <span>Resume Matcher</span>
-                </motion.div>
-              </Link>
               <div className="h-4 w-px bg-slate-800" />
               <div className="flex items-center space-x-3">
                 {session.user?.image ? (
@@ -66,10 +60,14 @@ export const Navbar = () => {
                     whileHover={{ scale: 1.1 }}
                     src={session.user.image} 
                     alt="User" 
-                    className="h-8 w-8 rounded-full border border-white/10 shadow-lg"
+                    onClick={() => setIsProfileModalOpen(true)}
+                    className="h-8 w-8 rounded-full border border-white/10 shadow-lg cursor-pointer hover:border-indigo-500/50 transition-colors"
                   />
                 ) : (
-                  <div className="h-8 w-8 rounded-full bg-slate-800 flex items-center justify-center">
+                  <div 
+                    className="h-8 w-8 rounded-full bg-slate-800 flex items-center justify-center cursor-pointer hover:bg-slate-700 transition-colors"
+                    onClick={() => setIsProfileModalOpen(true)}
+                  >
                     <UserIcon className="h-4 w-4 text-slate-400" />
                   </div>
                 )}
@@ -94,5 +92,12 @@ export const Navbar = () => {
         </div>
       </div>
     </motion.nav>
+    <StudentProfileModal
+        isOpen={isProfileModalOpen}
+        onClose={() => setIsProfileModalOpen(false)}
+        sessionEmail={session?.user?.email}
+        sessionName={session?.user?.name}
+    />
+    </>
   );
 };

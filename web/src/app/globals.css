@@ -25,6 +25,15 @@ body {
   font-family: Arial, Helvetica, sans-serif;
 }
 
+.resume-select {
+  color: #f8fafc;
+}
+
+.resume-select option {
+  color: #0f172a;
+  background: #f8fafc;
+}
+
 .enterprise-base {
   background: linear-gradient(160deg, #020617 0%, #030712 55%, #020617 100%);
 }

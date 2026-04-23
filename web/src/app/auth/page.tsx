@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { Suspense, useEffect, useState } from 'react';
 import { signIn } from 'next-auth/react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -23,7 +23,7 @@ import { Button } from '@/components/ui/Button';
 type LoadingKey = 'login' | 'signup' | 'google' | 'github' | 'guest' | null;
 type MessageState = { type: 'success' | 'error'; text: string } | null;
 
-export default function AuthPage() {
+function AuthPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const callbackUrl = searchParams?.get('callbackUrl') || '/dashboard';
@@ -497,5 +497,13 @@ export default function AuthPage() {
         </span>
       </motion.p>
     </div>
+  );
+}
+
+export default function AuthPage() {
+  return (
+    <Suspense fallback={<div className="min-h-screen bg-slate-950" />}>
+      <AuthPageContent />
+    </Suspense>
   );
 }

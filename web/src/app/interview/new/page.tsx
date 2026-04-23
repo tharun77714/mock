@@ -602,7 +602,7 @@ export default function InterviewPage() {
         </div>
 
         {/* Right column: Resume + Transcript */}
-        <div className="w-full lg:w-96 flex flex-col gap-4 min-h-0 overflow-hidden">
+        <div className="w-full lg:w-96 flex flex-col gap-4 min-h-0 overflow-y-auto pr-1 custom-scrollbar">
           {/* Resume Upload Section */}
           {!isConnected && !isUploading && (
             <>

@@ -8,6 +8,7 @@ try:
     load_dotenv(_repo_root / "web" / ".env.local")
     # Root env wins so keys like OPENAI_API_KEY are not blocked by empty lines in web/.env.local
     load_dotenv(_repo_root / ".env.local", override=True)
+# Reload trigger: environment variables updated
 except ImportError:
     pass
 
@@ -89,7 +90,7 @@ print(f"[OK] Device: {device}")
 # ---------------------------------------------------------------------------
 # Load EfficientNet-B0 (Video Emotion Model)
 # ---------------------------------------------------------------------------
-MODEL_PATH = os.path.join(os.path.dirname(__file__), "mockmate_efficientnet_b0.pt")
+MODEL_PATH = os.path.join(os.path.dirname(__file__), "..", "emotion", "model.pt")
 
 EMOTIONS = ['angry', 'disgust', 'fear', 'happy', 'neutral', 'sad', 'surprise']
 NUM_CLASSES = 7
@@ -149,7 +150,7 @@ inference_transform = transforms.Compose([
 # CNN + BiLSTM + Blend MLP Voice Confidence Model (Blended Architecture v2)
 # Confidence = blend(emotion_probs, acoustic_features) — no fake lookup tables
 # ---------------------------------------------------------------------------
-VOICE_MODEL_PATH = os.path.join(os.path.dirname(__file__), "best_model_new.pth")
+VOICE_MODEL_PATH = os.path.join(os.path.dirname(__file__), "..", "voice", "model.pth")
 VOICE_EMOTIONS = ['angry', 'disgust', 'fearful', 'happy', 'neutral', 'sad']
 MAX_FRAMES = 94
 PROSODIC_COLS = [
@@ -1315,15 +1316,15 @@ def _generate_interview_context_with_llm(prompt: str) -> dict:
             failures.append(f"Gemini: {err[:800]}")
             if "429" in err or "RESOURCE_EXHAUSTED" in err:
                 hint = (
-                    "Gemini free tier hit rate limits (normal for new projects). "
-                    "Use a free Groq key: set GROQ_API_KEY from https://console.groq.com/keys and restart uvicorn. "
-                    "Details: "
+                    "Gemini free tier hit rate limits. "
+                    "Ensure your GROQ_API_KEY is valid and uvicorn is restarted. "
+                    "All Errors: " + " | ".join(failures)
                 )
-                raise HTTPException(status_code=503, detail=(hint + err)[:4000])
+                raise HTTPException(status_code=503, detail=hint[:4000])
 
     raise HTTPException(
         status_code=502,
-        detail=("All configured LLMs failed. Try GROQ_API_KEY (free). Errors: " + " | ".join(failures))[:4000],
+        detail=("All configured LLMs failed. Errors: " + " | ".join(failures))[:4000],
     )
 
 

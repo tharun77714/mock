@@ -90,7 +90,7 @@ print(f"[OK] Device: {device}")
 # ---------------------------------------------------------------------------
 # Load EfficientNet-B0 (Video Emotion Model)
 # ---------------------------------------------------------------------------
-MODEL_PATH = os.path.join(os.path.dirname(__file__), "..", "emotion", "model.pt")
+MODEL_PATH = os.path.join(os.path.dirname(__file__), "..", "emotion_model", "emotion_efficientnet_b0.pt")
 
 EMOTIONS = ['angry', 'disgust', 'fear', 'happy', 'neutral', 'sad', 'surprise']
 NUM_CLASSES = 7
@@ -150,7 +150,7 @@ inference_transform = transforms.Compose([
 # CNN + BiLSTM + Blend MLP Voice Confidence Model (Blended Architecture v2)
 # Confidence = blend(emotion_probs, acoustic_features) — no fake lookup tables
 # ---------------------------------------------------------------------------
-VOICE_MODEL_PATH = os.path.join(os.path.dirname(__file__), "..", "voice", "model.pth")
+VOICE_MODEL_PATH = os.path.join(os.path.dirname(__file__), "..", "voice_model", "voice_confidence.pth")
 VOICE_EMOTIONS = ['angry', 'disgust', 'fearful', 'happy', 'neutral', 'sad']
 MAX_FRAMES = 94
 PROSODIC_COLS = [

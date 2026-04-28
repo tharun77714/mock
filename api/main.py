@@ -574,121 +574,78 @@ def _llm_chat(messages: list, temperature: float = 0.5) -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
-# Behavioral Interview Coaching (4-Dimension System)
-# Replaces single "confidence score" with objective behavioral signals
+# Gemini suggestions helper (uses Groq/OpenAI/Gemini via _llm_chat)
 # ---------------------------------------------------------------------------
-def get_behavioral_coaching(
-    voice_score: float,
+def get_gemini_suggestions(
+    voice_emotion: str,
+    confidence_score: float,
     pitch_score: float,
     fluency_score: float,
     energy_score: float,
-    eye_contact: float,
-    stability: float,
-    face_rate: float,
+    dominant_visual_emotion: str,
     filler_count: int,
     wpm: int,
-    transcript: str,
-) -> dict:
-    """Evaluate 4 behavioral dimensions and return structured per-dimension coaching."""
-    voice_pct   = int(voice_score * 100)
-    pitch_pct   = int(pitch_score * 100)
-    flu_pct     = int(fluency_score * 100)
-    eng_pct     = int(energy_score * 100)
-    eye_pct     = int(eye_contact)
-    stab_pct    = int(stability)
-    face_pct    = int(face_rate)
-    filler_note = f"{filler_count} filler words detected" if filler_count else "No filler words — clean speech"
-    pace_note   = f"{wpm} WPM — {'fast' if wpm > 160 else 'slow' if wpm < 100 else 'good pace'}"
+) -> list:
+    """Ask Gemini to generate 3 personalized voice coaching suggestions."""
+    conf_pct = int(confidence_score * 100)
+    pitch_pct = int(pitch_score * 100)
+    flu_pct = int(fluency_score * 100)
+    eng_pct = int(energy_score * 100)
 
-    candidate_text = ""
-    try:
-        msgs = json.loads(transcript)
-        candidate_text = " ".join(m["text"] for m in msgs if m.get("role") == "you")[:3000]
-    except Exception:
-        candidate_text = (transcript or "")[:3000]
+    prompt = f"""You are an expert interview coach specializing in voice and communication.
+A candidate just completed a mock job interview. Here are their analysis results:
 
-    prompt = f"""You are an expert interview coach. Evaluate this candidate across 4 behavioral dimensions.
+🎤 VOICE ANALYSIS (CNN+BiLSTM Deep Learning Model):
+- Detected Voice Emotion: {voice_emotion}
+- Confidence Score: {conf_pct}/100
+- Pitch Stability: {pitch_pct}/100
+- Speech Fluency: {flu_pct}/100
+- Energy Level: {eng_pct}/100
 
-=== OBJECTIVE SIGNALS ===
-🎤 DELIVERY (Voice Model — CNN+BiLSTM):
-  Voice Confidence: {voice_pct}/100
-  Pitch Stability: {pitch_pct}/100
-  Fluency: {flu_pct}/100
-  Energy: {eng_pct}/100
+📹 VISUAL ANALYSIS:
+- Dominant Facial Expression: {dominant_visual_emotion}
+- Filler Words Used: {filler_count}
+- Speaking Pace: {wpm} words per minute
 
-👁 NON-VERBAL PRESENCE (Vision Model — EfficientNet + OpenCV):
-  Eye Contact: {eye_pct}/100
-  Head Stability: {stab_pct}/100
-  Face Visibility: {face_pct}/100
+Based on ONLY these metrics, give exactly 3 specific, actionable coaching suggestions.
+Rules:
+- Each suggestion must be 1-2 sentences max
+- Be encouraging but honest
+- Reference the specific scores where relevant
+- Focus on what they can practice before their next interview
+- Return ONLY a JSON array of 3 strings, no markdown, no explanation
 
-🗣 COMMUNICATION CLARITY (Signal Analysis):
-  {filler_note}
-  {pace_note}
-
-📝 CANDIDATE TRANSCRIPT (for Content Quality evaluation):
-{candidate_text if candidate_text else 'No transcript available.'}
-
-=== YOUR TASK ===
-Return ONLY a valid JSON object with exactly this structure (no markdown, no extra text):
-{{
-  "delivery": {{
-    "score": <0-100 integer>,
-    "label": "<Strong/Good/Moderate/Needs Work>",
-    "signal": "<one short objective observation like 'Stable pitch, good energy'>",
-    "tip": "<one specific, actionable coaching tip>"
-  }},
-  "non_verbal": {{
-    "score": <0-100 integer>,
-    "label": "<Strong/Good/Moderate/Needs Work>",
-    "signal": "<one short objective observation like 'Eye contact inconsistent'>",
-    "tip": "<one specific, actionable coaching tip>"
-  }},
-  "clarity": {{
-    "score": <0-100 integer>,
-    "label": "<Strong/Good/Moderate/Needs Work>",
-    "signal": "<one short objective observation about pace or fillers>",
-    "tip": "<one specific, actionable coaching tip>"
-  }},
-  "content": {{
-    "score": <0-100 integer>,
-    "label": "<Strong/Good/Moderate/Needs Work>",
-    "signal": "<one short observation about structure, relevance, or examples used>",
-    "tip": "<one specific, actionable tip like 'Try the STAR method'>"
-  }},
-  "coaching_summary": "<2-sentence overall coaching summary that avoids saying 'you are X% confident' but instead says what was strong and what to improve>"
-}}"""
+Example format: ["suggestion 1", "suggestion 2", "suggestion 3"]"""
 
     try:
         text = _llm_chat(
             [
-                {"role": "system", "content": "Reply with one valid JSON object only. No markdown, no extra text."},
+                {"role": "system", "content": "Reply with a JSON array of exactly 3 strings only. No markdown."},
                 {"role": "user", "content": prompt},
             ],
-            temperature=0.4,
+            temperature=0.55,
         )
         if text:
-            start = text.find("{")
-            end = text.rfind("}") + 1
+            start = text.find("[")
+            end = text.rfind("]") + 1
             if start != -1 and end > start:
-                result = json.loads(text[start:end])
-                print(f"[Behavioral] delivery={result.get('delivery',{}).get('score')} non_verbal={result.get('non_verbal',{}).get('score')} clarity={result.get('clarity',{}).get('score')} content={result.get('content',{}).get('score')}")
-                return result
+                suggestions = json.loads(text[start:end])
+                if isinstance(suggestions, list):
+                    return [str(s) for s in suggestions[:3]]
     except Exception as e:
-        print(f"[Behavioral LLM] Error: {e}")
+        print(f"[Suggestions LLM] Error: {e}")
 
-    # Fallback when LLM fails — compute simple rule-based scores
-    delivery_score  = int((voice_pct + pitch_pct + flu_pct + eng_pct) / 4)
-    nonverbal_score = int((eye_pct + stab_pct + face_pct) / 3)
-    clarity_score   = max(0, 100 - filler_count * 4) if filler_count else 85
-    if wpm > 160 or wpm < 90: clarity_score = max(0, clarity_score - 15)
-    content_score   = 50  # cannot evaluate without LLM
-    return {
-        "delivery":    {"score": delivery_score,  "label": "Good" if delivery_score > 65 else "Moderate",  "signal": f"Voice confidence {voice_pct}%, pitch {pitch_pct}%", "tip": "Practice reading aloud to stabilize pitch and build energy."},
-        "non_verbal":  {"score": nonverbal_score, "label": "Good" if nonverbal_score > 65 else "Moderate", "signal": f"Eye contact {eye_pct}%, stability {stab_pct}%",   "tip": "Position your camera at eye level and look directly at it when speaking."},
-        "clarity":     {"score": clarity_score,   "label": "Good" if clarity_score > 65 else "Moderate",  "signal": filler_note + ", " + pace_note,                  "tip": "Pause deliberately instead of filling silence with filler words."},
-        "content":     {"score": content_score,   "label": "Moderate",                                     "signal": "Structure analysis unavailable without LLM.",        "tip": "Use the STAR method (Situation, Task, Action, Result) for every answer."},
-        "coaching_summary": "Your delivery and non-verbal signals have been recorded. Focus on structuring answers using the STAR method and reducing filler words for maximum impact."
-    }
+    # Fallback suggestions if Gemini fails
+    fallback = []
+    if conf_pct < 60:
+        fallback.append(f"Your voice confidence was {conf_pct}%. Practice speaking affirmations out loud daily to build vocal authority.")
+    if pitch_pct < 60:
+        fallback.append(f"Your pitch stability scored {pitch_pct}%. Try reading aloud slowly to reduce pitch variation and sound more composed.")
+    if flu_pct < 60:
+        fallback.append(f"Your fluency scored {flu_pct}%. Pause deliberately between sentences instead of rushing — silence is powerful.")
+    if not fallback:
+        fallback.append("Great voice metrics! Focus on maintaining this confidence under pressure in real interviews.")
+    return fallback[:3]
 
 
 # ---------------------------------------------------------------------------
@@ -1134,10 +1091,20 @@ async def process_media(request: ProcessRequest):
         dominant_emotion  = video["dominant_emotion"]  if video else "neutral"
         emotion_breakdown = video["emotion_breakdown"] if video else {"neutral": 100}
 
-        # Lightweight fallback seed (used only if LLM behavioral coaching fails)
+        # Confidence = 100% from CNN+BiLSTM voice model (real, not blended)
         avg_confidence = int((voice_scores["confidence_score"] * 100)) if voice_scores else 65
-        emotion_label  = EMOTION_TO_CONFIDENCE.get(dominant_emotion, "Neutral")
-        communication  = ""   # Will be replaced by behavioral.coaching_summary from LLM
+
+        emotion_label = EMOTION_TO_CONFIDENCE.get(dominant_emotion, "Neutral")
+
+        voice_conf = avg_confidence
+        if voice_conf > 80 and stability > 70:
+            communication = "Strong vocal presence with confident delivery and composed body language."
+        elif voice_conf > 65:
+            communication = "Good delivery overall — small improvements in voice energy would make a big impact."
+        elif voice_conf > 50:
+            communication = "Moderate delivery — focus on speaking with more authority and maintaining eye contact."
+        else:
+            communication = "Needs practice — try recording yourself daily to build vocal confidence and presence."
 
         # Eye contact label (real iris gaze)
         if eye_contact > 80:
@@ -1173,64 +1140,84 @@ async def process_media(request: ProcessRequest):
             posture_label = "Needs Improvement"
             posture_details = "Work on sitting upright and staying centered in the camera frame."
 
-        # ── 4-Dimension Behavioral Analysis (Groq / OpenAI / Gemini) ────────
-        print("[Process] Calling LLM for behavioral coaching...")
-        behavioral = get_behavioral_coaching(
-            voice_score=voice_scores["confidence_score"] if voice_scores else 0.5,
-            pitch_score=voice_scores["pitch_score"]      if voice_scores else 0.5,
-            fluency_score=voice_scores["fluency_score"]  if voice_scores else 0.5,
-            energy_score=voice_scores["energy_score"]    if voice_scores else 0.5,
-            eye_contact=eye_contact,
-            stability=stability,
-            face_rate=face_rate,
+        # ── LLM coaching suggestions (Groq / OpenAI / Gemini) ────────────
+        print("[Process] Calling LLM for suggestions...")
+        gemini_suggestions = get_gemini_suggestions(
+            voice_emotion=voice_scores["voice_emotion"] if voice_scores else dominant_emotion,
+            confidence_score=voice_scores["confidence_score"] if voice_scores else avg_confidence / 100,
+            pitch_score=voice_scores["pitch_score"] if voice_scores else 0.5,
+            fluency_score=voice_scores["fluency_score"] if voice_scores else 0.5,
+            energy_score=voice_scores["energy_score"] if voice_scores else 0.5,
+            dominant_visual_emotion=dominant_emotion,
             filler_count=filler["count"],
             wpm=pace["wpm"],
-            transcript=request.transcript or "",
         )
-        print(f"[Process] Behavioral coaching done.")
+        print(f"[Process] LLM returned {len(gemini_suggestions)} suggestions")
 
-        # ── Transcript coaching (English language coaching) ───────────────
+        # ── Transcript coaching (same LLM chain) ─────────────────────────
         print("[Process] Calling LLM for transcript coaching...")
         english_coaching = get_transcript_coaching(request.transcript or "")
         print(f"[Process] English coaching done. Level: {english_coaching.get('english_level')}")
 
-        # ── Compute the 4 behavioral scores ──────────────────────────────
-        delivery_score   = behavioral.get("delivery",   {}).get("score", int((voice_scores["confidence_score"] * 100) if voice_scores else 50))
-        non_verbal_score = behavioral.get("non_verbal", {}).get("score", int((eye_contact + stability + face_rate) / 3))
-        clarity_score    = behavioral.get("clarity",    {}).get("score", max(0, 100 - filler["count"] * 4))
-        content_score    = behavioral.get("content",    {}).get("score", 50)
+        # Rule-based suggestions (combined with Gemini)
+        rule_suggestions = []
+        if face_rate < 80:
+            rule_suggestions.append(
+                f"Your face was visible only {face_rate:.0f}% of the time. Keep your face centered in the camera frame."
+            )
+        if stability < 60:
+            rule_suggestions.append("Reduce head movement during responses to appear more composed and confident.")
+        if dominant_emotion in ("fear", "sad"):
+            rule_suggestions.append("You appeared nervous. Try power posing before interviews and practice deep breathing.")
+        if dominant_emotion == "angry":
+            rule_suggestions.append("You appeared tense at times. Relax your facial muscles and smile naturally.")
+        if filler["count"] > 5:
+            top_fillers = sorted(filler["details"].items(), key=lambda x: -x[1])[:3]
+            filler_str = ", ".join([f"'{w}' ({c}x)" for w, c in top_fillers])
+            rule_suggestions.append(f"You used {filler['count']} filler words ({filler_str}). Practice pausing instead of filling silence.")
+        if pace["wpm"] > 160:
+            rule_suggestions.append("Your speaking pace was fast. Slow down and add pauses between key points.")
+        elif pace["wpm"] < 100:
+            rule_suggestions.append("Your speaking pace was slow. Try to maintain energy and momentum.")
+
+        # Combine: Gemini suggestions first, then rule-based (max 6 total)
+        all_suggestions = gemini_suggestions + rule_suggestions
+        if len(all_suggestions) == 0:
+            all_suggestions.append("Excellent performance across the board. Keep practicing to stay sharp!")
+
+        overall_score = int(
+            avg_confidence * 0.3
+            + face_rate * 0.2
+            + stability * 0.2
+            + max(0, 100 - filler["count"] * 5) * 0.15
+            + min(100, max(0, 100 - abs(pace["wpm"] - 130))) * 0.15
+        )
+        overall_score = max(10, min(98, overall_score))
 
         analysis_result = {
             "interviewId": request.interview_id,
-            # ── 4-Dimension Behavioral Scores (NEW) ──
-            "behavioralSignals": {
-                "delivery":   behavioral.get("delivery",   {}),
-                "non_verbal": behavioral.get("non_verbal", {}),
-                "clarity":    behavioral.get("clarity",    {}),
-                "content":    behavioral.get("content",    {}),
-                "coaching_summary": behavioral.get("coaching_summary", ""),
-            },
-            # ── Raw metric details (kept for detail cards) ──
-            "eyeContact":      {"score": round(eye_contact), "label": eye_label},
-            "headStability":   {"score": stability, "label": head_label},
-            "faceInFrame":     {"score": round(face_rate), "label": face_in_label},
-            "facialExpression":{"dominant": dominant_emotion, "breakdown": emotion_breakdown},
-            "fillerWords":     filler,
-            "speakingPace":    pace,
-            "posture":         {"score": posture_score, "label": posture_label, "details": posture_details},
-            "voiceAnalysis":   voice_scores if voice_scores else {
+            "confidence": avg_confidence,
+            "emotion": emotion_label,
+            "communication": communication,
+            "suggestions": all_suggestions[:6],
+            "eyeContact": {"score": round(eye_contact), "label": eye_label},
+            "posture": {"score": posture_score, "label": posture_label, "details": posture_details},
+            "headStability": {"score": stability, "label": head_label},
+            "facialExpression": {"dominant": dominant_emotion, "breakdown": emotion_breakdown},
+            "fillerWords": filler,
+            "speakingPace": pace,
+            "overallScore": overall_score,
+            # Voice model scores (shown as bonus metrics in frontend)
+            "voiceAnalysis": voice_scores if voice_scores else {
                 "voice_emotion": dominant_emotion,
-                "confidence_score": 0.5, "pitch_score": 0.5,
-                "fluency_score": 0.5, "energy_score": 0.5,
+                "confidence_score": avg_confidence / 100,
+                "pitch_score": 0.5,
+                "fluency_score": 0.5,
+                "energy_score": 0.5,
             },
-            # ── English coaching ──
             "englishCoaching": english_coaching,
-            # ── Legacy fields (kept for backward compat) ──
-            "confidence":   delivery_score,
-            "overallScore": int((delivery_score * 0.3 + non_verbal_score * 0.25 + clarity_score * 0.25 + content_score * 0.2)),
-            "emotion":      emotion_label,
-            "communication": behavioral.get("coaching_summary", communication),
-            "audio_url":    audio_url,
+            "faceInFrame": {"score": round(face_rate), "label": face_in_label},
+            "audio_url": audio_url,
         }
 
         print(f"[Process] Complete. Overall score: {overall_score}")

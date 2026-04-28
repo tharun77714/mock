@@ -1916,7 +1916,8 @@ export default function ResumeBuilderPage() {
                     <option
                       key={font}
                       value={font}
-                      style={{ ...OPTION_STYLE, fontFamily: `'${font}', sans-serif` }}
+                      className="bg-slate-900 text-white"
+                      style={{ fontFamily: `'${font}', sans-serif` }}
                     >
                       {font}
                     </option>

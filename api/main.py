@@ -8,7 +8,6 @@ try:
     load_dotenv(_repo_root / "web" / ".env.local")
     # Root env wins so keys like OPENAI_API_KEY are not blocked by empty lines in web/.env.local
     load_dotenv(_repo_root / ".env.local", override=True)
-# Reload trigger: environment variables updated
 except ImportError:
     pass
 
@@ -174,9 +173,8 @@ class ConvBlock(nn.Module):
 
 
 class VoiceConfidenceModel(nn.Module):
-    """Blended architecture v2:
-    CNN+BiLSTM → emotion_probs (6, soft) + prosodic_enc (32) → Blend MLP → confidence (1)
-    Emotion is auxiliary — shapes the backbone, not the sole confidence source.
+    """Multi-Head Architecture:
+    CNN+BiLSTM + Prosodic Encoder → Fusion → Multiple Heads (Emotion, Confidence, Pitch, Fluency, Energy)
     """
     def __init__(self):
         super().__init__()
@@ -187,16 +185,19 @@ class VoiceConfidenceModel(nn.Module):
         self.cnn_proj = nn.Sequential(nn.Linear(1024, 256), nn.LayerNorm(256), nn.ReLU())
         self.bilstm = nn.LSTM(256, 256, 2, batch_first=True, bidirectional=True, dropout=0.3)
         self.attention = nn.Sequential(nn.Linear(512, 64), nn.Tanh(), nn.Linear(64, 1))
-        # Auxiliary emotion head (6 emotions)
-        self.emotion_head = nn.Sequential(nn.Linear(512, 64), nn.ReLU(), nn.Linear(64, 6))
-        # Prosodic encoder
-        self.prosodic_enc = nn.Sequential(nn.Linear(13, 32), nn.ReLU(), nn.BatchNorm1d(32))
-        # Blend MLP: emotion_probs(6) + prosodic(32) → confidence(1)
-        self.blend = nn.Sequential(
-            nn.Linear(6 + 32, 64), nn.ReLU(), nn.Dropout(0.3),
-            nn.Linear(64, 32), nn.ReLU(),
-            nn.Linear(32, 1), nn.Sigmoid()
+        
+        self.prosodic_encoder = nn.Sequential(nn.Linear(13, 64), nn.ReLU(), nn.BatchNorm1d(64))
+        self.fusion = nn.Sequential(
+            nn.Linear(512 + 64, 256), nn.ReLU(), nn.Dropout(0.3),
+            nn.Linear(256, 128), nn.ReLU()
         )
+        
+        head = lambda out: nn.Sequential(nn.Linear(128, 64), nn.ReLU(), nn.Linear(64, out))
+        self.head_emotion = head(6)
+        self.head_confidence = nn.Sequential(head(1), nn.Sigmoid())
+        self.head_pitch = nn.Sequential(head(1), nn.Sigmoid())
+        self.head_fluency = nn.Sequential(head(1), nn.Sigmoid())
+        self.head_energy = nn.Sequential(head(1), nn.Sigmoid())
 
     def forward(self, mel, prosodic):
         B = mel.shape[0]
@@ -205,11 +206,17 @@ class VoiceConfidenceModel(nn.Module):
         lstm_out, _ = self.bilstm(x)
         weights = torch.softmax(self.attention(lstm_out), dim=1)
         pooled = (lstm_out * weights).sum(dim=1)
-        emotion_logits = self.emotion_head(pooled)
-        emotion_probs  = torch.softmax(emotion_logits, dim=1)
-        pros = self.prosodic_enc(prosodic)
-        confidence = self.blend(torch.cat([emotion_probs, pros], dim=1)).squeeze(-1)
-        return {'emotion_logits': emotion_logits, 'confidence': confidence}
+        
+        pros = self.prosodic_encoder(prosodic)
+        shared = self.fusion(torch.cat([pooled, pros], dim=1))
+        
+        return {
+            'emotion_logits': self.head_emotion(shared),
+            'confidence': self.head_confidence(shared).squeeze(-1),
+            'pitch': self.head_pitch(shared).squeeze(-1),
+            'fluency': self.head_fluency(shared).squeeze(-1),
+            'energy': self.head_energy(shared).squeeze(-1)
+        }
 
 
 voice_model = None
@@ -409,12 +416,10 @@ def run_voice_model(audio_path: str) -> Optional[dict]:
         # Single blended confidence score (primary output)
         confidence = round(float(out['confidence'].item()), 3)
 
-        # Derive pitch / fluency / energy directly from raw prosodic features
-        # so the frontend API contract stays identical
-        raw = prosodic_list  # unscaled values
-        pitch_score   = round(float(np.clip(raw[3], 0, 1)), 3)                      # pitch_stability
-        fluency_score = round(float(np.clip(1.0 - raw[11], 0, 1)), 3)              # 1 - silence_ratio
-        energy_score  = round(float(np.clip(raw[7] / 0.08, 0, 1)), 3)             # energy_mean normalised
+        # Use the multi-head model predictions directly instead of raw heuristic overrides
+        pitch_score   = round(float(out['pitch'].item()), 3)
+        fluency_score = round(float(out['fluency'].item()), 3)
+        energy_score  = round(float(out['energy'].item()), 3)
 
         # Blend model confidence with prosody when the net outputs ~0 but audio is clearly voiced
         if confidence < 0.12:
@@ -1316,15 +1321,15 @@ def _generate_interview_context_with_llm(prompt: str) -> dict:
             failures.append(f"Gemini: {err[:800]}")
             if "429" in err or "RESOURCE_EXHAUSTED" in err:
                 hint = (
-                    "Gemini free tier hit rate limits. "
-                    "Ensure your GROQ_API_KEY is valid and uvicorn is restarted. "
-                    "All Errors: " + " | ".join(failures)
+                    "Gemini free tier hit rate limits (normal for new projects). "
+                    "Use a free Groq key: set GROQ_API_KEY from https://console.groq.com/keys and restart uvicorn. "
+                    "Details: "
                 )
-                raise HTTPException(status_code=503, detail=hint[:4000])
+                raise HTTPException(status_code=503, detail=(hint + err)[:4000])
 
     raise HTTPException(
         status_code=502,
-        detail=("All configured LLMs failed. Errors: " + " | ".join(failures))[:4000],
+        detail=("All configured LLMs failed. Try GROQ_API_KEY (free). Errors: " + " | ".join(failures))[:4000],
     )
 
 

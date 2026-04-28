@@ -105,10 +105,23 @@ export default function SummaryPage() {
   );
 
   const a = data.analysis || {};
-  const looksLikePlaceholderVoice =
-    a?.voiceAnalysis &&
-    [a.voiceAnalysis.confidence_score, a.voiceAnalysis.pitch_score, a.voiceAnalysis.fluency_score, a.voiceAnalysis.energy_score]
-      .every((v: any) => typeof v === 'number' && Math.abs(v - 0.5) < 0.0001);
+  const bs = a.behavioralSignals || {};
+
+  // Helper: label → color
+  const labelColor = (label: string) => {
+    if (label === 'Strong')      return 'emerald';
+    if (label === 'Good')        return 'blue';
+    if (label === 'Moderate')    return 'amber';
+    return 'rose';
+  };
+
+  const DIMS = [
+    { key: 'delivery',   icon: Mic,          title: '🎤 Delivery',              desc: 'Voice stability, pitch & energy',         color: 'purple' },
+    { key: 'non_verbal', icon: Eye,           title: '👁 Non-Verbal Presence',   desc: 'Eye contact, head stability, visibility',  color: 'blue' },
+    { key: 'clarity',    icon: MessageCircle, title: '🗣 Communication Clarity', desc: 'Filler words, pacing, articulation',       color: 'amber' },
+    { key: 'content',    icon: Brain,         title: '🧠 Content Quality',       desc: 'Structure, relevance, STAR method',        color: 'indigo' },
+  ] as const;
+
   const transcriptMessages = (() => {
     try { return JSON.parse(data.transcript); } catch { return null; }
   })();
@@ -129,7 +142,7 @@ export default function SummaryPage() {
         {/* Header */}
         <header className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-8">
           <div>
-            <h1 className="text-4xl font-bold text-white tracking-tight">Interview Analysis</h1>
+            <h1 className="text-4xl font-bold text-white tracking-tight">Interview Behavior Analysis</h1>
             <p className="mt-2 text-slate-400">Conducted on {new Date(data.createdAt).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}</p>
           </div>
           <div className="flex items-center gap-3">
@@ -139,22 +152,53 @@ export default function SummaryPage() {
           </div>
         </header>
 
-        {/* Overall Score Banner */}
-        <motion.div 
-          initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}
-          className="p-8 rounded-3xl bg-gradient-to-br from-indigo-500/10 to-blue-500/10 border border-white/10 mb-8"
-        >
-          <div className="flex flex-col sm:flex-row items-center gap-8">
-            <ScoreRing score={a.overallScore || a.confidence || 0} size={140} label="Overall Score" color="indigo" />
-            <div className="flex-1">
-              <h3 className="text-2xl font-bold text-white mb-2">{a.emotion || "Analysis Pending"}</h3>
-              <p className="text-slate-400 leading-relaxed">{a.communication || "Complete an interview to get your analysis."}</p>
+        {/* 4-Dimension Behavioral Dashboard */}
+        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="mb-8">
+          {bs.coaching_summary && (
+            <div className="p-6 rounded-3xl bg-gradient-to-br from-indigo-500/10 to-purple-500/10 border border-indigo-500/20 mb-6">
+              <div className="flex items-start gap-4">
+                <Sparkles className="h-6 w-6 text-indigo-400 shrink-0 mt-0.5" />
+                <div>
+                  <p className="text-xs font-bold text-indigo-400 uppercase tracking-widest mb-2">AI Coaching Summary</p>
+                  <p className="text-white leading-relaxed">{bs.coaching_summary}</p>
+                </div>
+              </div>
             </div>
-            <div className="flex gap-6">
-              <ScoreRing score={a.confidence || 0} size={90} label="Confidence" color="emerald" />
-              <ScoreRing score={a.eyeContact?.score || 0} size={90} label="Eye Contact" color="blue" />
-              <ScoreRing score={a.headStability?.score || 0} size={90} label="Stability" color="amber" />
-            </div>
+          )}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            {DIMS.map(({ key, icon: Icon, title, desc, color }) => {
+              const dim = (bs as any)[key] || {};
+              const score: number = dim.score ?? 0;
+              const label: string = dim.label ?? 'N/A';
+              const signal: string = dim.signal ?? '';
+              const tip: string = dim.tip ?? '';
+              const badgeColors: Record<string, string> = {
+                Strong:      'text-emerald-400 bg-emerald-500/10 border-emerald-500/30',
+                Good:        'text-blue-400 bg-blue-500/10 border-blue-500/30',
+                Moderate:    'text-amber-400 bg-amber-500/10 border-amber-500/30',
+                'Needs Work':'text-rose-400 bg-rose-500/10 border-rose-500/30',
+              };
+              const barColors: Record<string, string> = { Strong: 'bg-emerald-500', Good: 'bg-blue-500', Moderate: 'bg-amber-500', 'Needs Work': 'bg-rose-500' };
+              const textColors: Record<string, string> = { purple: 'text-purple-400', blue: 'text-blue-400', amber: 'text-amber-400', indigo: 'text-indigo-400' };
+              return (
+                <motion.div key={key} initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}
+                  className="p-5 rounded-3xl bg-white/5 border border-white/10 flex flex-col gap-3">
+                  <div className="flex items-center gap-2">
+                    <Icon className={`h-4 w-4 ${textColors[color]}`} />
+                    <span className="text-xs font-bold text-white uppercase tracking-widest">{title}</span>
+                  </div>
+                  <div className="flex items-end gap-3">
+                    <span className={`text-4xl font-bold ${textColors[color]}`}>{score}%</span>
+                    <span className={`mb-1 text-xs font-bold px-2 py-0.5 rounded-full border ${badgeColors[label] ?? badgeColors['Moderate']}`}>{label}</span>
+                  </div>
+                  <div className="h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                    <div className={`h-full rounded-full ${barColors[label] ?? 'bg-amber-500'}`} style={{ width: `${score}%` }} />
+                  </div>
+                  <p className="text-xs text-slate-400">{signal}</p>
+                  <p className="text-xs text-slate-300 font-medium border-t border-white/5 pt-2">{tip}</p>
+                </motion.div>
+              );
+            })}
           </div>
         </motion.div>
 
@@ -162,8 +206,9 @@ export default function SummaryPage() {
           {/* Left Column */}
           <div className="lg:col-span-2 space-y-8">
             
-            {/* Metric Cards */}
+            {/* Metric Detail Cards */}
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+
               <MetricCard icon={Eye} title="Eye contact (gaze)" value={a.eyeContact?.label || "N/A"} subtitle={`${a.eyeContact?.score ?? 0}% toward camera`} color="blue" />
               {a.faceInFrame != null && (
                 <MetricCard icon={User} title="Face in frame" value={a.faceInFrame.label || "—"} subtitle={`${a.faceInFrame.score ?? 0}% of sampled frames`} color="emerald" />
@@ -203,8 +248,8 @@ export default function SummaryPage() {
               <MetricCard icon={TrendingUp} title="Posture" value={a.posture?.label || "N/A"} subtitle={a.posture?.details || ""} color="blue" />
             </div>
 
-            {/* Voice Analysis — CNN+BiLSTM */}
-            {a.voiceAnalysis && !looksLikePlaceholderVoice && (
+            {/* Voice Signal Detail — Raw model outputs */}
+            {a.voiceAnalysis && (
               <section className="p-6 rounded-3xl bg-gradient-to-br from-purple-500/10 to-indigo-500/10 border border-purple-500/20">
                 <h3 className="text-lg font-bold text-white mb-5 flex items-center gap-2">
                   <Mic className="h-5 w-5 text-purple-400" />
@@ -424,43 +469,29 @@ export default function SummaryPage() {
 
             {/* Quick Stats */}
             <div className="p-6 rounded-3xl bg-white/5 border border-white/10">
-              <h3 className="text-sm font-bold text-white mb-6 uppercase tracking-widest">Performance Summary</h3>
+              <h3 className="text-sm font-bold text-white mb-6 uppercase tracking-widest">Behavioral Scores</h3>
               <div className="space-y-4">
-                <div className="flex items-center justify-between text-sm">
-                  <span className="text-slate-400">Overall Score</span>
-                  <span className={`font-bold ${(a.overallScore || 0) > 70 ? 'text-emerald-400' : (a.overallScore || 0) > 50 ? 'text-amber-400' : 'text-rose-400'}`}>
-                    {a.overallScore || 0}%
-                  </span>
-                </div>
-                <div className="flex items-center justify-between text-sm">
-                  <span className="text-slate-400">Confidence</span>
-                  <span className={`font-bold ${(a.confidence || 0) > 70 ? 'text-emerald-400' : 'text-amber-400'}`}>
-                    {a.confidence || 0}%
-                  </span>
-                </div>
-                <div className="flex items-center justify-between text-sm">
-                  <span className="text-slate-400">Eye Contact</span>
-                  <span className={`font-bold ${(a.eyeContact?.score || 0) > 70 ? 'text-emerald-400' : 'text-amber-400'}`}>
-                    {a.eyeContact?.label || "N/A"}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between text-sm">
-                  <span className="text-slate-400">Head Stability</span>
-                  <span className={`font-bold ${(a.headStability?.score || 0) > 60 ? 'text-emerald-400' : 'text-amber-400'}`}>
-                    {a.headStability?.label || "N/A"}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between text-sm">
-                  <span className="text-slate-400">Filler Words</span>
-                  <span className={`font-bold ${(a.fillerWords?.count || 0) < 5 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                    {a.fillerWords?.count || 0} detected
-                  </span>
-                </div>
-                <div className="flex items-center justify-between text-sm">
-                  <span className="text-slate-400">Speaking Pace</span>
-                  <span className="font-bold text-blue-400">
-                    {a.speakingPace?.wpm || 0} wpm
-                  </span>
+                {[
+                  { label: 'Delivery',           score: bs.delivery?.score   ?? 0, lbl: bs.delivery?.label   ?? 'N/A' },
+                  { label: 'Non-Verbal',          score: bs.non_verbal?.score ?? 0, lbl: bs.non_verbal?.label ?? 'N/A' },
+                  { label: 'Clarity',             score: bs.clarity?.score   ?? 0, lbl: bs.clarity?.label   ?? 'N/A' },
+                  { label: 'Content Quality',     score: bs.content?.score   ?? 0, lbl: bs.content?.label   ?? 'N/A' },
+                ].map(({ label, score, lbl }) => (
+                  <div key={label} className="flex items-center justify-between text-sm">
+                    <span className="text-slate-400">{label}</span>
+                    <span className={`font-bold ${
+                      lbl === 'Strong' ? 'text-emerald-400' :
+                      lbl === 'Good'   ? 'text-blue-400'    :
+                      lbl === 'Moderate' ? 'text-amber-400' : 'text-rose-400'
+                    }`}>{score}% &bull; {lbl}</span>
+                  </div>
+                ))}
+                <div className="pt-2 border-t border-white/10 flex items-center justify-between text-sm">
+                  <span className="text-slate-400">Overall</span>
+                  <span className={`font-bold ${
+                    (a.overallScore || 0) > 70 ? 'text-emerald-400' :
+                    (a.overallScore || 0) > 50 ? 'text-amber-400'   : 'text-rose-400'
+                  }`}>{a.overallScore || 0}%</span>
                 </div>
               </div>
             </div>

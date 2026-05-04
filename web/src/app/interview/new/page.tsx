@@ -49,60 +49,18 @@ interface InterviewContext {
   tipsForSuccess: string;
   openingMessage: string;
 }
-
 function buildPersonalizedAssistant(
   jobRole: string,
   companyName: string,
-  resumeText: string,
+  systemPrompt: string,
   context: InterviewContext | null
 ) {
   const company = companyName.trim() || "a leading tech company";
   const role = jobRole.trim() || "Software Engineer";
-  const resumeBlock = resumeText
-    ? `=== RESUME ===\n${resumeText.slice(0, 5000)}\n=== END ===`
-    : "No resume — ask strong role- and company-appropriate questions.";
-
-  const systemPrompt = context
-    ? `${context.interviewerPersona}
-
-You are running a mock interview for ${role} at ${company}. You are a SENIOR interviewer. Do NOT act like a generic chatbot.
-
-=== COMPANY ===
-${context.companyOverview}
-Interview style: ${context.interviewStyle}
-Culture / fit: ${context.cultureFitFocus}
-Framework: ${context.behavioralFramework}
-Tips for candidates: ${context.tipsForSuccess}
-Red flags: ${context.redFlags}
-
-${resumeBlock}
-
-=== FLOW ===
-${context.interviewStructure}
-
-=== QUESTION BANK (adapt, do not read verbatim) ===
-${context.sampleQuestions.map((q, i) => `${i + 1}. [${q.type}] ${q.question}`).join("\n")}
-
-CRITICAL INTERVIEW GUIDELINES:
-1. First spoken line must match this (verbatim): ${JSON.stringify(context.openingMessage)}
-2. DO NOT just say "Great answer" and immediately ask the next distinct question.
-3. CRITIQUE and PUSH BACK: If an answer is shallow, challenge them. ("That makes sense for a small app, but how would you handle 10 million concurrent users?", or "What's the tradeoff of that approach?")
-4. Acknowledge what they said specifically, offer a tiny piece of feedback, then smoothly transition.
-5. Limit to 8–10 total distinct questions throughout the session, but use aggressive follow-ups if they give weak answers.`
-    : `You are a senior interviewer at ${company} hiring for ${role}.
-
-${resumeBlock}
-
-CRITICAL INSTRUCTIONS:
-- You are a STRICT, SENIOR technical interviewer. Conduct a realistic mock interview.
-- Start by welcoming them and asking for a brief intro.
-- DO NOT just say "Great answer" and move to the next topic. 
-- You MUST evaluate their answers. If they give a superficial answer, PUSH BACK ("Can you go deeper into the exact architecture?", or "What are the edge cases there?").
-- Ask 8-10 targeted questions. Be professional, push for depth, and sound exactly like a hiring manager at a real tech company.`;
 
   const firstMessage =
     context?.openingMessage ||
-    `Hi — I’m your interviewer today for the ${role} role${companyName.trim() ? ` at ${companyName.trim()}` : ""}. Before we dive in, tell me a bit about yourself.`;
+    `Hi — I'm your interviewer today for the ${role} role${companyName.trim() ? ` at ${companyName.trim()}` : ""}. Before we dive in, tell me a bit about yourself.`;
 
   return {
     name: `MockMate — ${role} @ ${company}`,
@@ -119,22 +77,7 @@ CRITICAL INSTRUCTIONS:
   };
 }
 
-function buildResumeAssistant(resumeText: string) {
-  const systemPrompt = `You are a strict, senior-level interviewer conducting a professional mock interview. You have access to the candidate's resume below.
-
-=== CANDIDATE RESUME ===
-${resumeText.slice(0, 6000)}
-=== END RESUME ===
-
-CRITICAL INSTRUCTIONS:
-- Start by welcoming the candidate, then ask them to briefly introduce themselves.
-- Ask 8-10 targeted questions based strictly on the specifics in their resume (projects, skills, past experience).
-- DO NOT just say "Great" and move on. You MUST act like a real engineering manager. 
-- PUSH BACK: If they mention using "React" or "Python" or "AWS", grill them on it. Ask about tradeoffs, scaling, edge cases, or what the hardest bug was in the project they listed.
-- If their answer is vague, say: "That's a bit high-level. Can you walk me through the exact technical implementation?"
-- Keep your questions and responses concise (1-3 sentences max) but ruthless and professional.
-- After all questions are exhausted, ask if they have any questions for you.`;
-
+function buildResumeAssistant(systemPrompt: string) {
   return {
     name: "MockMate Resume Interviewer",
     firstMessage:
@@ -245,7 +188,7 @@ export default function InterviewPage() {
         const tryAttach = () => {
           if (videoRef.current) {
             videoRef.current.srcObject = stream;
-            videoRef.current.play().catch(() => {});
+            videoRef.current.play().catch(() => { });
           } else {
             setTimeout(tryAttach, 100);
           }
@@ -317,7 +260,7 @@ export default function InterviewPage() {
     v.on("error", (e: any) => {
       console.error("[Vapi] Raw Error Object:", e);
       let errMsg = "Vapi connection failed. Check console for details.";
-      
+
       try {
         if (e && e.error && e.error.message) {
           errMsg = Array.isArray(e.error.message) ? e.error.message.join(", ") : e.error.message;
@@ -331,7 +274,7 @@ export default function InterviewPage() {
       } catch (err) {
         console.error("Failed to parse Vapi error:", err);
       }
-      
+
       setContextError(errMsg);
       setIsConnecting(false);
     });
@@ -433,7 +376,18 @@ export default function InterviewPage() {
     try {
       let cfg: any = null;
       if (jobRole.trim() || resumeText) {
-        cfg = buildPersonalizedAssistant(jobRole, companyName, resumeText, interviewContext);
+        const res = await fetch("/api/interview-context/system-prompt", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            context: interviewContext,
+            role: jobRole,
+            company: companyName,
+            resumeText,
+          }),
+        });
+        const { systemPrompt } = await res.json();
+        cfg = buildPersonalizedAssistant(jobRole, companyName, systemPrompt, interviewContext);
       }
 
       if (wf) {
@@ -490,9 +444,8 @@ export default function InterviewPage() {
               autoPlay
               muted
               playsInline
-              className={`h-full w-full object-cover transform scale-x-[-1] transition-opacity duration-500 ${
-                isVideoOff ? "opacity-0" : "opacity-100"
-              }`}
+              className={`h-full w-full object-cover transform scale-x-[-1] transition-opacity duration-500 ${isVideoOff ? "opacity-0" : "opacity-100"
+                }`}
             />
             {isVideoOff && (
               <div className="absolute inset-0 flex items-center justify-center bg-slate-800">
@@ -606,157 +559,157 @@ export default function InterviewPage() {
           {/* Resume Upload Section */}
           {!isConnected && !isUploading && (
             <>
-            <motion.div
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="rounded-3xl bg-slate-900/50 border border-white/10 p-6 backdrop-blur-xl"
-            >
-              <h2 className="text-lg font-bold text-white flex items-center gap-2 mb-4">
-                <Target className="h-4 w-4 text-indigo-400" />
-                Interview setup
-              </h2>
-              <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
-                Job role <span className="text-red-400">*</span>
-              </label>
-              <div className="flex items-center gap-2 mb-3">
-                <Briefcase className="h-4 w-4 text-slate-500 shrink-0" />
-                <select
-                  value={jobRole}
-                  onChange={(e) => {
-                    setJobRole(e.target.value);
-                    setContextReady(false);
-                    setInterviewContext(null);
-                  }}
-                  className="w-full bg-slate-800/80 border border-white/10 rounded-xl px-3 py-2.5 text-sm text-white outline-none focus:border-indigo-500/50"
-                >
-                  <option value="">Select role…</option>
-                  {JOB_ROLES.map((r) => (
-                    <option key={r} value={r}>{r}</option>
-                  ))}
-                </select>
-              </div>
-              <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
-                Company <span className="text-slate-600">(optional)</span>
-              </label>
-              <div className="flex items-center gap-2 mb-4">
-                <Building2 className="h-4 w-4 text-slate-500 shrink-0" />
-                <input
-                  type="text"
-                  value={companyName}
-                  onChange={(e) => {
-                    setCompanyName(e.target.value);
-                    setContextReady(false);
-                    setInterviewContext(null);
-                  }}
-                  placeholder="e.g. Google, Microsoft…"
-                  className="w-full bg-slate-800/80 border border-white/10 rounded-xl px-3 py-2.5 text-sm text-white placeholder-slate-500 outline-none focus:border-indigo-500/50"
-                />
-              </div>
-              <Button
-                type="button"
-                variant="secondary"
-                className="w-full gap-2 mb-2 border-indigo-500/30 bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-100"
-                disabled={!jobRole.trim() || isGeneratingContext}
-                onClick={generateContext}
+              <motion.div
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="rounded-3xl bg-slate-900/50 border border-white/10 p-6 backdrop-blur-xl"
               >
-                {isGeneratingContext ? (
-                  <>
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                    Generating…
-                  </>
-                ) : contextReady ? (
-                  <>
-                    <Zap className="h-4 w-4" />
-                    Regenerate context
-                  </>
-                ) : (
-                  <>
-                    <Zap className="h-4 w-4" />
-                    Generate interview context (AI)
-                  </>
-                )}
-              </Button>
-              {contextError && (
-                <p className="text-xs text-red-400 flex items-start gap-1.5 mb-2">
-                  <AlertCircle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
-                  {contextError}
-                </p>
-              )}
-              <p className="text-xs text-slate-500 leading-relaxed">
-                Free tier: set <code className="text-slate-400">GROQ_API_KEY</code> from{" "}
-                <a href="https://console.groq.com/keys" className="text-indigo-400 underline" target="_blank" rel="noreferrer">
-                  Groq
-                </a>
-                . Fallbacks: OpenAI, then Gemini. FastAPI on port 8000; <code className="text-slate-400">pip install openai</code> in API venv.
-              </p>
-            </motion.div>
-
-            <motion.div
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="rounded-3xl bg-slate-900/50 border border-white/10 p-6 backdrop-blur-xl"
-            >
-              <h2 className="text-lg font-bold text-white flex items-center gap-2 mb-4">
-                <Upload className="h-4 w-4 text-indigo-400" />
-                Upload Resume
-              </h2>
-
-              {!resumeFile ? (
-                <label className="flex flex-col items-center justify-center h-32 rounded-2xl border-2 border-dashed border-white/10 hover:border-indigo-500/50 transition-colors cursor-pointer group">
-                  <input
-                    type="file"
-                    accept=".pdf"
-                    onChange={handleResumeUpload}
-                    className="hidden"
-                  />
-                  <FileText className="h-8 w-8 text-slate-500 group-hover:text-indigo-400 transition-colors mb-2" />
-                  <span className="text-sm text-slate-400 group-hover:text-slate-300 transition-colors">
-                    Drop your resume PDF here
-                  </span>
-                  <span className="text-xs text-slate-600 mt-1">
-                    PDF only, max 10 MB
-                  </span>
+                <h2 className="text-lg font-bold text-white flex items-center gap-2 mb-4">
+                  <Target className="h-4 w-4 text-indigo-400" />
+                  Interview setup
+                </h2>
+                <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
+                  Job role <span className="text-red-400">*</span>
                 </label>
-              ) : (
-                <div className="flex items-center gap-3 p-3 rounded-xl bg-slate-800/50 border border-white/5">
-                  {resumeParsing ? (
-                    <Loader2 className="h-5 w-5 text-indigo-400 animate-spin shrink-0" />
-                  ) : resumeText ? (
-                    <CheckCircle className="h-5 w-5 text-emerald-400 shrink-0" />
-                  ) : (
-                    <FileText className="h-5 w-5 text-red-400 shrink-0" />
-                  )}
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-white truncate">
-                      {resumeFile.name}
-                    </p>
-                    <p className="text-xs text-slate-500">
-                      {resumeParsing
-                        ? "Parsing..."
-                        : resumeText
-                          ? `Parsed (${resumeText.split(/\s+/).length} words)`
-                          : resumeError || "Error"}
-                    </p>
-                  </div>
-                  <button
-                    onClick={removeResume}
-                    className="text-slate-500 hover:text-red-400 transition-colors"
+                <div className="flex items-center gap-2 mb-3">
+                  <Briefcase className="h-4 w-4 text-slate-500 shrink-0" />
+                  <select
+                    value={jobRole}
+                    onChange={(e) => {
+                      setJobRole(e.target.value);
+                      setContextReady(false);
+                      setInterviewContext(null);
+                    }}
+                    className="w-full bg-slate-800/80 border border-white/10 rounded-xl px-3 py-2.5 text-sm text-white outline-none focus:border-indigo-500/50"
                   >
-                    <Trash2 className="h-4 w-4" />
-                  </button>
+                    <option value="">Select role…</option>
+                    {JOB_ROLES.map((r) => (
+                      <option key={r} value={r}>{r}</option>
+                    ))}
+                  </select>
                 </div>
-              )}
+                <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
+                  Company <span className="text-slate-600">(optional)</span>
+                </label>
+                <div className="flex items-center gap-2 mb-4">
+                  <Building2 className="h-4 w-4 text-slate-500 shrink-0" />
+                  <input
+                    type="text"
+                    value={companyName}
+                    onChange={(e) => {
+                      setCompanyName(e.target.value);
+                      setContextReady(false);
+                      setInterviewContext(null);
+                    }}
+                    placeholder="e.g. Google, Microsoft…"
+                    className="w-full bg-slate-800/80 border border-white/10 rounded-xl px-3 py-2.5 text-sm text-white placeholder-slate-500 outline-none focus:border-indigo-500/50"
+                  />
+                </div>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  className="w-full gap-2 mb-2 border-indigo-500/30 bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-100"
+                  disabled={!jobRole.trim() || isGeneratingContext}
+                  onClick={generateContext}
+                >
+                  {isGeneratingContext ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      Generating…
+                    </>
+                  ) : contextReady ? (
+                    <>
+                      <Zap className="h-4 w-4" />
+                      Regenerate context
+                    </>
+                  ) : (
+                    <>
+                      <Zap className="h-4 w-4" />
+                      Generate interview context (AI)
+                    </>
+                  )}
+                </Button>
+                {contextError && (
+                  <p className="text-xs text-red-400 flex items-start gap-1.5 mb-2">
+                    <AlertCircle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+                    {contextError}
+                  </p>
+                )}
+                <p className="text-xs text-slate-500 leading-relaxed">
+                  Free tier: set <code className="text-slate-400">GROQ_API_KEY</code> from{" "}
+                  <a href="https://console.groq.com/keys" className="text-indigo-400 underline" target="_blank" rel="noreferrer">
+                    Groq
+                  </a>
+                  . Fallbacks: OpenAI, then Gemini. FastAPI on port 8000; <code className="text-slate-400">pip install openai</code> in API venv.
+                </p>
+              </motion.div>
 
-              {resumeError && (
-                <p className="text-xs text-red-400 mt-2">{resumeError}</p>
-              )}
+              <motion.div
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="rounded-3xl bg-slate-900/50 border border-white/10 p-6 backdrop-blur-xl"
+              >
+                <h2 className="text-lg font-bold text-white flex items-center gap-2 mb-4">
+                  <Upload className="h-4 w-4 text-indigo-400" />
+                  Upload Resume
+                </h2>
 
-              <p className="text-xs text-slate-500 mt-3 leading-relaxed">
-                {resumeText
-                  ? "Combined with role, company, and generated context for sharper questions."
-                  : "Optional — improves personalization with role and company."}
-              </p>
-            </motion.div>
+                {!resumeFile ? (
+                  <label className="flex flex-col items-center justify-center h-32 rounded-2xl border-2 border-dashed border-white/10 hover:border-indigo-500/50 transition-colors cursor-pointer group">
+                    <input
+                      type="file"
+                      accept=".pdf"
+                      onChange={handleResumeUpload}
+                      className="hidden"
+                    />
+                    <FileText className="h-8 w-8 text-slate-500 group-hover:text-indigo-400 transition-colors mb-2" />
+                    <span className="text-sm text-slate-400 group-hover:text-slate-300 transition-colors">
+                      Drop your resume PDF here
+                    </span>
+                    <span className="text-xs text-slate-600 mt-1">
+                      PDF only, max 10 MB
+                    </span>
+                  </label>
+                ) : (
+                  <div className="flex items-center gap-3 p-3 rounded-xl bg-slate-800/50 border border-white/5">
+                    {resumeParsing ? (
+                      <Loader2 className="h-5 w-5 text-indigo-400 animate-spin shrink-0" />
+                    ) : resumeText ? (
+                      <CheckCircle className="h-5 w-5 text-emerald-400 shrink-0" />
+                    ) : (
+                      <FileText className="h-5 w-5 text-red-400 shrink-0" />
+                    )}
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-white truncate">
+                        {resumeFile.name}
+                      </p>
+                      <p className="text-xs text-slate-500">
+                        {resumeParsing
+                          ? "Parsing..."
+                          : resumeText
+                            ? `Parsed (${resumeText.split(/\s+/).length} words)`
+                            : resumeError || "Error"}
+                      </p>
+                    </div>
+                    <button
+                      onClick={removeResume}
+                      className="text-slate-500 hover:text-red-400 transition-colors"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  </div>
+                )}
+
+                {resumeError && (
+                  <p className="text-xs text-red-400 mt-2">{resumeError}</p>
+                )}
+
+                <p className="text-xs text-slate-500 mt-3 leading-relaxed">
+                  {resumeText
+                    ? "Combined with role, company, and generated context for sharper questions."
+                    : "Optional — improves personalization with role and company."}
+                </p>
+              </motion.div>
             </>
           )}
 
@@ -780,25 +733,22 @@ export default function InterviewPage() {
                 messages.map((msg, i) => (
                   <div
                     key={i}
-                    className={`flex flex-col gap-1 ${
-                      msg.role === "you" ? "items-end" : "items-start"
-                    }`}
+                    className={`flex flex-col gap-1 ${msg.role === "you" ? "items-end" : "items-start"
+                      }`}
                   >
                     <span
-                      className={`text-[10px] font-bold uppercase tracking-widest ${
-                        msg.role === "interviewer"
+                      className={`text-[10px] font-bold uppercase tracking-widest ${msg.role === "interviewer"
                           ? "text-indigo-400"
                           : "text-emerald-400"
-                      }`}
+                        }`}
                     >
                       {msg.role === "interviewer" ? "Interviewer" : "You"}
                     </span>
                     <p
-                      className={`px-3 py-2 rounded-2xl max-w-[85%] ${
-                        msg.role === "interviewer"
+                      className={`px-3 py-2 rounded-2xl max-w-[85%] ${msg.role === "interviewer"
                           ? "bg-slate-800/80 text-slate-300"
                           : "bg-indigo-600/20 text-slate-300"
-                      }`}
+                        }`}
                     >
                       {msg.text}
                     </p>

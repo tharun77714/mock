@@ -15,7 +15,7 @@ export async function GET() {
 
     await dbConnect();
     const user = await User.findOne({ email: session.user.email }).select('-password');
-    
+
     if (!user) {
       return NextResponse.json({ error: 'User not found' }, { status: 404 });
     }
@@ -49,7 +49,7 @@ export async function PUT(req: Request) {
     const updatedUser = await User.findOneAndUpdate(
       { email: session.user.email },
       { $set: updateData },
-      { new: true, strict: false }
+      { new: true, strict: true }
     ).select('-password');
 
     if (!updatedUser) {

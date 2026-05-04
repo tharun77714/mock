@@ -169,21 +169,21 @@ export default function ResumeBuilderPage() {
   const hasEnhanceableContent = useMemo(() => {
     return Boolean(
       resume.basics.fullName ||
-        resume.basics.headline ||
-        resume.summary.trim() ||
-        resume.skills.some(Boolean) ||
-        resume.experience.some(
-          (item) =>
-            item.role.trim() ||
-            item.company.trim() ||
-            item.highlights.some(Boolean)
-        ) ||
-        resume.projects.some(
-          (item) =>
-            item.name.trim() ||
-            item.description.trim() ||
-            item.highlights.some(Boolean)
-        )
+      resume.basics.headline ||
+      resume.summary.trim() ||
+      resume.skills.some(Boolean) ||
+      resume.experience.some(
+        (item) =>
+          item.role.trim() ||
+          item.company.trim() ||
+          item.highlights.some(Boolean)
+      ) ||
+      resume.projects.some(
+        (item) =>
+          item.name.trim() ||
+          item.description.trim() ||
+          item.highlights.some(Boolean)
+      )
     );
   }, [resume]);
 
@@ -1177,33 +1177,33 @@ export default function ResumeBuilderPage() {
   const skillChipStyle: React.CSSProperties =
     metadata.template === 'classic'
       ? {
-          padding: '2px 8px',
-          borderRadius: 999,
-          border: `1px solid ${accent}55`,
-          color: '#1e293b',
-          background: `${accent}10`,
-          fontSize: fontSize * 0.84,
-          fontWeight: 600,
-        }
+        padding: '2px 8px',
+        borderRadius: 999,
+        border: `1px solid ${accent}55`,
+        color: '#1e293b',
+        background: `${accent}10`,
+        fontSize: fontSize * 0.84,
+        fontWeight: 600,
+      }
       : metadata.template === 'professional'
         ? {
-            padding: '4px 10px',
-            borderRadius: 6,
-            border: '1px solid rgba(15, 23, 42, 0.08)',
-            color: '#0f172a',
-            background: `linear-gradient(135deg, ${accent}14, rgba(255,255,255,0.7))`,
-            fontSize: fontSize * 0.85,
-            fontWeight: 700,
-          }
+          padding: '4px 10px',
+          borderRadius: 6,
+          border: '1px solid rgba(15, 23, 42, 0.08)',
+          color: '#0f172a',
+          background: `linear-gradient(135deg, ${accent}14, rgba(255,255,255,0.7))`,
+          fontSize: fontSize * 0.85,
+          fontWeight: 700,
+        }
         : {
-            padding: '3px 10px',
-            borderRadius: 5,
-            border: `1px solid ${accent}30`,
-            color: accent,
-            background: `${accent}15`,
-            fontSize: fontSize * 0.88,
-            fontWeight: 600,
-          };
+          padding: '3px 10px',
+          borderRadius: 5,
+          border: `1px solid ${accent}30`,
+          color: accent,
+          background: `${accent}15`,
+          fontSize: fontSize * 0.88,
+          fontWeight: 600,
+        };
 
   const renderHeader = () => {
     if (!resume.basics.fullName) return null;
@@ -1216,10 +1216,10 @@ export default function ResumeBuilderPage() {
     const profileItems =
       !hidden.has('profiles') && resume.profiles.length
         ? resume.profiles
-            .filter((profile) => profile.network || profile.url)
-            .map((profile) =>
-              `${profile.network}${profile.username ? `: ${profile.username}` : ''}`
-            )
+          .filter((profile) => profile.network || profile.url)
+          .map((profile) =>
+            `${profile.network}${profile.username ? `: ${profile.username}` : ''}`
+          )
         : [];
 
     if (metadata.template === 'classic') {
@@ -1739,15 +1739,14 @@ export default function ResumeBuilderPage() {
               key={action.label}
               onClick={action.onClick}
               disabled={action.disabled}
-              className={`flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-[11px] font-semibold transition-all ${
-                action.active
+              className={`flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-[11px] font-semibold transition-all ${action.active
                   ? 'border-indigo-500/30 bg-indigo-500/20 text-indigo-300'
                   : action.tone === 'pdf'
                     ? 'border-emerald-500/50 bg-emerald-600 text-white shadow-lg shadow-emerald-500/10 hover:bg-emerald-500'
                     : action.tone === 'ai'
                       ? 'border-sky-500/50 bg-sky-600 text-white shadow-lg shadow-sky-500/10 hover:bg-sky-500 disabled:border-sky-500/20 disabled:bg-sky-800/40'
                       : 'border-transparent text-slate-400 hover:bg-white/[0.06] hover:text-white'
-              } ${action.disabled ? 'cursor-not-allowed opacity-60' : ''}`}
+                } ${action.disabled ? 'cursor-not-allowed opacity-60' : ''}`}
             >
               {action.icon}
               {action.label}
@@ -1785,13 +1784,12 @@ export default function ResumeBuilderPage() {
                 <button
                   key={section}
                   onClick={() => setActive(section)}
-                  className={`group flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left transition-all ${
-                    active === section
+                  className={`group flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left transition-all ${active === section
                       ? 'bg-indigo-500/15 text-indigo-200 shadow-sm shadow-indigo-500/5'
                       : hidden.has(section)
                         ? 'text-slate-700 hover:text-slate-500'
                         : 'text-slate-400 hover:bg-white/[0.04] hover:text-slate-200'
-                  }`}
+                    }`}
                 >
                   <span className="flex items-center gap-2.5 text-[12px] font-medium">
                     <span
@@ -1867,11 +1865,10 @@ export default function ResumeBuilderPage() {
                     <button
                       key={template.id}
                       onClick={() => setMetadata({ template: template.id })}
-                      className={`rounded-lg border px-2 py-2 text-left text-[10px] font-semibold transition ${
-                        metadata.template === template.id
+                      className={`rounded-lg border px-2 py-2 text-left text-[10px] font-semibold transition ${metadata.template === template.id
                           ? 'border-indigo-500/30 bg-indigo-500/20 text-indigo-300'
                           : 'border-transparent text-slate-400 hover:bg-white/[0.04] hover:text-slate-200'
-                      }`}
+                        }`}
                     >
                       <div className="text-[9px] font-bold uppercase tracking-[0.18em] text-slate-500">
                         {template.emoji}
@@ -1891,11 +1888,10 @@ export default function ResumeBuilderPage() {
                     <button
                       key={color}
                       onClick={() => setMetadata({ accentColor: color })}
-                      className={`h-5 w-5 rounded-full transition-transform hover:scale-125 ${
-                        metadata.accentColor === color
+                      className={`h-5 w-5 rounded-full transition-transform hover:scale-125 ${metadata.accentColor === color
                           ? 'scale-110 ring-2 ring-white ring-offset-1 ring-offset-[#0c0c14]'
                           : ''
-                      }`}
+                        }`}
                       style={{ background: color }}
                     />
                   ))}

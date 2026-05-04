@@ -53,8 +53,6 @@ def normalize_text(text):
         r"\brest apis\b": "rest api",
         r"\bnodejs\b": "node.js",
         r"\bimplementin\b": "implementing",
-        r"\bal\b": "ai",
-        r"\bml\b": "machine learning",
     }
     for pattern, replacement in replacements.items():
         text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
@@ -316,16 +314,16 @@ def run_pipeline(image_path, pipeline, ocr_reader):
     skills = predict_skills(text, pipeline)
     role   = pipeline["role_model"].predict(vec)[0]
 
-    # Smart role override
-    if "devops" in text or "ci/cd" in text or "kubernetes" in text or "docker" in text:
+    # Only override when there are STRONG, specific signals the model likely missed
+    # Use word counts to avoid false positives from single mentions
+    devops_signals = sum(1 for w in ["kubernetes", "ci/cd", "terraform", "ansible", "helm"] if w in text)
+    if devops_signals >= 2:
         role = "DevOps Engineer"
-    elif "data engineer" in text or "etl" in text or ("pipeline" in text and "data" in text):
+    elif text.count("etl") >= 2 or ("data engineer" in text):
         role = "Data Engineer"
-    elif "machine learning" in text or "deep learning" in text:
-        role = "AI Engineer"
-    elif "excel" in text or "tableau" in text:
+    elif "excel" in text and "tableau" in text and "machine learning" not in text:
         role = "Business Analyst"
-
+    # else: trust the trained model
     exp = extract_experience(text)
     jobs_list, best_score = match_jobs(skills, text, role, pipeline)
 

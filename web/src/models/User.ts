@@ -32,4 +32,3 @@ const UserSchema: Schema = new Schema(
 );
 
 export default (mongoose.models.User as mongoose.Model<IUser>) || mongoose.model<IUser>('User', UserSchema);
-

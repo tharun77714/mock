@@ -48,6 +48,15 @@ from PIL import Image
 
 import google.genai as genai
 
+import logging
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger("mockmate")
+
 app = FastAPI()
 
 app.add_middleware(
@@ -124,6 +133,7 @@ def _build_efficientnet(num_classes: int) -> nn.Module:
 
 
 emotion_model = None
+_emotion_model_error: str = ""
 try:
     checkpoint = torch.load(MODEL_PATH, map_location=device, weights_only=False)
     emotion_model = _build_efficientnet(checkpoint.get("num_classes", NUM_CLASSES))
@@ -133,8 +143,12 @@ try:
     acc = checkpoint.get("test_accuracy", 0)
     f1 = checkpoint.get("test_f1_macro", 0)
     print(f"[OK] EfficientNet-B0 loaded | Acc: {acc:.4f} F1: {f1:.4f}")
+except FileNotFoundError:
+    _emotion_model_error = f"Model file not found: {MODEL_PATH}"
+    print(f"[ERROR] {_emotion_model_error}")
 except Exception as e:
-    print(f"[WARN] Could not load emotion model: {e}")
+    _emotion_model_error = str(e)
+    print(f"[ERROR] Could not load emotion model: {e}")
 
 face_cascade = cv2.CascadeClassifier(
     cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
@@ -216,18 +230,22 @@ voice_model = None
 voice_label_encoder = None
 voice_scaler_mean = None
 voice_scaler_std  = None
+_voice_model_error: str = ""
 try:
     ckpt = torch.load(VOICE_MODEL_PATH, map_location=device, weights_only=False)
     voice_model = VoiceConfidenceModel().to(device)
     voice_model.load_state_dict(ckpt['model'])
     voice_model.eval()
     voice_label_encoder = ckpt.get('label_encoder', VOICE_EMOTIONS)
-    # Blended model stores scaler as mean/std arrays instead of sklearn object
     voice_scaler_mean = np.array(ckpt['scaler_mean']) if 'scaler_mean' in ckpt else None
     voice_scaler_std  = np.array(ckpt['scaler_std'])  if 'scaler_std'  in ckpt else None
     print(f"[OK] VoiceConfidenceModel (blended v2) loaded from {VOICE_MODEL_PATH}")
+except FileNotFoundError:
+    _voice_model_error = f"Model file not found: {VOICE_MODEL_PATH}"
+    print(f"[ERROR] {_voice_model_error}")
 except Exception as e:
-    print(f"[WARN] Could not load voice model: {e}")
+    _voice_model_error = str(e)
+    print(f"[ERROR] Could not load voice model: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -240,16 +258,52 @@ FILLER_WORDS = {
 }
 
 
+import ipaddress
+
+ALLOWED_VIDEO_DOMAINS = {
+    "supabase.co",
+    "supabase.in",
+    "amazonaws.com",
+    "storage.googleapis.com",
+    "cloudflare.com",
+    "r2.cloudflarestorage.com",
+}
+
 def _is_http_url(s: str) -> bool:
     s = (s or "").strip()
     return s.startswith("http://") or s.startswith("https://")
+
+def _is_allowed_video_url(url: str) -> bool:
+    """Block SSRF — only allow known storage domains, block internal IPs."""
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        host = parsed.hostname or ""
+
+        # Block private/loopback IPs
+        try:
+            ip = ipaddress.ip_address(host)
+            if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+                print(f"[Security] Blocked internal IP in video URL: {host}")
+                return False
+        except ValueError:
+            pass  # not an IP — check domain
+
+        # Only allow known storage domains
+        allowed = any(host == d or host.endswith("." + d) for d in ALLOWED_VIDEO_DOMAINS)
+        if not allowed:
+            print(f"[Security] Blocked non-allowlisted domain: {host}")
+        return allowed
+    except Exception as e:
+        print(f"[Security] URL validation error: {e}")
+        return False
 
 
 def download_video_to_temp(url: str) -> Optional[str]:
     import requests
 
     try:
-        r = requests.get(url, timeout=180, stream=True)
+        r = requests.get(url, timeout=30, stream=True)
         r.raise_for_status()
         suffix = ".webm"
         if ".mp4" in url.lower():
@@ -272,6 +326,9 @@ def resolve_local_video_path(video_path: str) -> tuple[Optional[str], Optional[s
     if os.path.exists(video_path):
         return video_path, None
     if _is_http_url(video_path):
+        if not _is_allowed_video_url(video_path):
+            print(f"[Security] Rejected video URL: {video_path}")
+            return None, None
         p = download_video_to_temp(video_path)
         if p:
             return p, p
@@ -328,8 +385,9 @@ def read_root():
         },
         "emotion_model_loaded": emotion_model is not None,
         "voice_model_loaded": voice_model is not None,
+        "emotion_model_error": _emotion_model_error or None,
+        "voice_model_error": _voice_model_error or None,
     }
-
 
 # ---------------------------------------------------------------------------
 # Voice inference helper
@@ -527,14 +585,28 @@ def extract_real_prosodic(audio_path: str) -> list:
 # ---------------------------------------------------------------------------
 # LLM helper — Groq (free) → OpenAI → Gemini (same order as interview context)
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# LLM singleton clients — created once at startup, reused on every call
+# ---------------------------------------------------------------------------
+from openai import OpenAI as _OpenAI
+
+_groq_client: Optional["_OpenAI"] = (
+    _OpenAI(api_key=GROQ_API_KEY, base_url="https://api.groq.com/openai/v1")
+    if GROQ_API_KEY else None
+)
+_openai_client: Optional["_OpenAI"] = (
+    _OpenAI(api_key=OPENAI_API_KEY)
+    if OPENAI_API_KEY else None
+)
+
+# ---------------------------------------------------------------------------
+# LLM helper — Groq (free) → OpenAI → Gemini (same order as interview context)
+# ---------------------------------------------------------------------------
 def _llm_chat(messages: list, temperature: float = 0.5) -> Optional[str]:
     """Return assistant text, or None if every provider fails."""
-    if GROQ_API_KEY:
+    if _groq_client:
         try:
-            from openai import OpenAI
-
-            client = OpenAI(api_key=GROQ_API_KEY, base_url="https://api.groq.com/openai/v1")
-            resp = client.chat.completions.create(
+            resp = _groq_client.chat.completions.create(
                 model=GROQ_MODEL,
                 messages=messages,
                 temperature=temperature,
@@ -542,12 +614,9 @@ def _llm_chat(messages: list, temperature: float = 0.5) -> Optional[str]:
             return (resp.choices[0].message.content or "").strip()
         except Exception as e:
             print(f"[LLM] Groq failed: {e}")
-    if OPENAI_API_KEY:
+    if _openai_client:
         try:
-            from openai import OpenAI
-
-            client = OpenAI(api_key=OPENAI_API_KEY)
-            resp = client.chat.completions.create(
+            resp = _openai_client.chat.completions.create(
                 model=OPENAI_MODEL,
                 messages=messages,
                 temperature=temperature,
@@ -633,7 +702,6 @@ def get_behavioral_coaching(
     candidate_snippet = sanitize_user_text(candidate_text, max_len=3000) if candidate_text else "No transcript available."
     prompt = f"""You are an expert interview coach who evaluates behavioral interview signals.
 A candidate just completed a mock job interview. Analyze across 4 dimensions ONLY — do NOT claim to measure "confidence" directly.
-
 === RAW SIGNALS ===
 DELIVERY (voice model output):
 - Pitch stability: {pitch_pct}/100
@@ -1321,24 +1389,28 @@ def _run_full_analysis(request: ProcessRequest) -> dict:
     }
 
 
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+
+# Dedicated thread pool for CPU-bound ML work — keeps FastAPI event loop free
+_ml_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="ml_worker")
+
+
 @app.post("/process")
 async def process_media(request: ProcessRequest):
     """
-    Endpoint stays async so FastAPI can handle other requests while this runs.
-    All blocking CPU/IO work is offloaded to a thread pool via run_in_executor,
-    so the event loop is never frozen during the 10-30s ML pipeline.
+    CPU-bound ML work runs in a dedicated ThreadPoolExecutor so the
+    FastAPI event loop is never blocked, and other requests stay responsive.
     """
-    import asyncio
     loop = asyncio.get_event_loop()
     try:
-        analysis_result = await loop.run_in_executor(None, _run_full_analysis, request)
+        analysis_result = await loop.run_in_executor(_ml_executor, _run_full_analysis, request)
         return analysis_result
     except Exception as e:
         print(f"Error processing: {str(e)}")
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
-
 
 # ---------------------------------------------------------------------------
 # Interview context — role + company + resume → JSON for Vapi (OpenAI or Gemini)
@@ -1395,6 +1467,18 @@ def _generate_interview_context_with_llm(prompt: str) -> dict:
         raise HTTPException(status_code=502, detail=f"Failed to parse LLM response as JSON: {e}")
 
 
+import hashlib
+from functools import lru_cache
+
+# Simple in-memory cache for interview context (role+company, no resume)
+_interview_context_cache: dict = {}
+_CACHE_MAX_SIZE = 200
+
+
+def _cache_key(role: str, company: str) -> str:
+    return hashlib.md5(f"{role.lower().strip()}|{company.lower().strip()}".encode()).hexdigest()
+
+
 @app.post("/generate-interview-context")
 async def generate_interview_context(request: InterviewContextRequest):
     """Company- and role-aware interview brief for the voice agent."""
@@ -1403,6 +1487,13 @@ async def generate_interview_context(request: InterviewContextRequest):
 
     company = (request.companyName or "").strip() or "a leading company"
     role = request.jobRole.strip()
+
+    # Only cache when no resume is provided (resume makes every request unique)
+    cache_key = _cache_key(role, company) if not request.resumeText else None
+    if cache_key and cache_key in _interview_context_cache:
+        print(f"[InterviewContext] Cache hit for {role} @ {company}")
+        return {"success": True, "context": _interview_context_cache[cache_key], "cached": True}
+
     resume_snippet = (
         f"\nCandidate resume (first 3000 chars):\n{request.resumeText[:3000]}"
         if request.resumeText
@@ -1433,7 +1524,9 @@ Be specific to {company} and {role}. If the company is well-known (Google, Amazo
     try:
         context = _generate_interview_context_with_llm(prompt)
         print(f"[InterviewContext] OK for {role} @ {company}")
-        return {"success": True, "context": context}
+        if cache_key and len(_interview_context_cache) < _CACHE_MAX_SIZE:
+            _interview_context_cache[cache_key] = context
+        return {"success": True, "context": context, "cached": False}
     except HTTPException:
         raise
     except json.JSONDecodeError as e:

@@ -89,10 +89,9 @@ Return ONLY a valid raw JSON object — no markdown, no explanation:
 # ---------------------------------------------------------------------------
 def clean_json(raw: str) -> str:
     raw = raw.strip()
-    # re.IGNORECASE handles ```JSON, ```Json, ```json from different LLMs
     raw = re.sub(r'^```json\s*', '', raw, flags=re.IGNORECASE)
-    raw = re.sub(r'^```\s*', '', raw)
-    raw = re.sub(r'\s*```$', '', raw)
+    raw = re.sub(r'^```\s*', '', raw, flags=re.IGNORECASE)
+    raw = re.sub(r'\s*```$', '', raw, flags=re.IGNORECASE)
     # Also strip any leading/trailing non-JSON characters before the first { or [
     first_brace = min(
         (raw.find(c) for c in ('{', '[') if raw.find(c) != -1),

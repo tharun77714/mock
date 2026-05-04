@@ -31,9 +31,5 @@ const UserSchema: Schema = new Schema(
   { timestamps: true }
 );
 
-// Clean up Mongoose cache during hot reloading
-if (mongoose.models.User) {
-  delete mongoose.models.User;
-}
+export default (mongoose.models.User as mongoose.Model<IUser>) || mongoose.model<IUser>('User', UserSchema);
 
-export default mongoose.model<IUser>('User', UserSchema);

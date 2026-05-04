@@ -1,11 +1,11 @@
 import os
 import json
 import re
-import io
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from fastapi.responses import JSONResponse
 import google.genai as genai
 from openai import OpenAI
+from routers.pdf_utils import extract_pdf_text
 
 resume_ai_router = APIRouter()
 
@@ -21,40 +21,10 @@ groq_client = OpenAI(
     base_url="https://api.groq.com/openai/v1"
 ) if GROQ_API_KEY else None
 
-# ---------------------------------------------------------------------------
-# PDF Text Extraction
-# ---------------------------------------------------------------------------
-def extract_pdf_text(pdf_bytes: bytes) -> str:
-    """Try pdfplumber first, then pypdf fallback."""
-    try:
-        import pdfplumber
-        with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-            text = "\n".join(page.extract_text() or "" for page in pdf.pages)
-            return text.strip()
-    except ImportError:
-        pass
-    except Exception as e:
-        raise HTTPException(status_code=422, detail=f"pdfplumber extraction failed: {e}")
-
-    try:
-        import pypdf
-        reader = pypdf.PdfReader(io.BytesIO(pdf_bytes))
-        return "\n".join(page.extract_text() or "" for page in reader.pages).strip()
-    except ImportError:
-        raise HTTPException(
-            status_code=500,
-            detail="No PDF library installed. Run: pip install pdfplumber"
-        )
-    except Exception as e:
-        raise HTTPException(status_code=422, detail=f"PDF extraction failed: {e}")
-
-
-# ---------------------------------------------------------------------------
 # Prompts
 # ---------------------------------------------------------------------------
-GEMINI_PROMPT = """\
+ATS_XRAY_PROMPT = """\
 You are a FAANG senior recruiter and ATS algorithm expert. Brutally and precisely analyze this resume.
-
 TARGET ROLE: {role}
 TARGET COMPANY: {company}
 
@@ -119,9 +89,21 @@ Return ONLY a valid raw JSON object — no markdown, no explanation:
 # ---------------------------------------------------------------------------
 def clean_json(raw: str) -> str:
     raw = raw.strip()
-    raw = re.sub(r'^```json\s*', '', raw)
+    # re.IGNORECASE handles ```JSON, ```Json, ```json from different LLMs
+    raw = re.sub(r'^```json\s*', '', raw, flags=re.IGNORECASE)
     raw = re.sub(r'^```\s*', '', raw)
     raw = re.sub(r'\s*```$', '', raw)
+    # Also strip any leading/trailing non-JSON characters before the first { or [
+    first_brace = min(
+        (raw.find(c) for c in ('{', '[') if raw.find(c) != -1),
+        default=0
+    )
+    last_brace = max(
+        (raw.rfind(c) for c in ('}', ']') if raw.rfind(c) != -1),
+        default=len(raw) - 1
+    )
+    if first_brace > 0 or last_brace < len(raw) - 1:
+        raw = raw[first_brace:last_brace + 1]
     return raw.strip()
 
 
@@ -163,7 +145,7 @@ async def analyze_resume(
 
     # ── Analysis 1: X-Ray + ATS + Patch Notes (Groq) ──────────────────────
     try:
-        prompt = GEMINI_PROMPT.format(
+        prompt = ATS_XRAY_PROMPT.format(
             role=target_role,
             company=target_company,
             resume_text=resume_text

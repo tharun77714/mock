@@ -42,23 +42,35 @@ class EmotionPredictor:
         except Exception as e:
             print(f"Error loading model: {e}")
             self.model = None
-
-    def predict(self, image_path):
+    def predict(self, image_path: str):
+        """Predict from an image file path."""
         if self.model is None:
             return None
-        
         image = Image.open(image_path).convert('RGB')
-        tensor = self.transform(image).unsqueeze(0).to(self.device)
-        
+        return self._run(image)
+
+    def predict_from_array(self, bgr_array):
+        """Predict from a BGR numpy array (e.g. OpenCV face crop).
+        This is what main.py needs — pass the raw face crop directly.
+        """
+        if self.model is None:
+            return None
+        import cv2
+        rgb = cv2.cvtColor(bgr_array, cv2.COLOR_BGR2RGB)
+        image = Image.fromarray(rgb)
+        return self._run(image)
+
+    def _run(self, pil_image: Image.Image):
+        """Shared inference logic."""
+        tensor = self.transform(pil_image).unsqueeze(0).to(self.device)
         with torch.no_grad():
             logits = self.model(tensor)
-            probs = torch.softmax(logits, dim=1).squeeze().cpu().numpy()
-            
-        dominant_idx = probs.argmax()
+            probs  = torch.softmax(logits, dim=1).squeeze().cpu().numpy()
+        dominant_idx = int(probs.argmax())
         return {
-            "dominant": EMOTIONS[dominant_idx],
+            "dominant":   EMOTIONS[dominant_idx],
             "confidence": float(probs[dominant_idx]),
-            "scores": {EMOTIONS[i]: float(probs[i]) for i in range(len(EMOTIONS))}
+            "scores":     {EMOTIONS[i]: float(probs[i]) for i in range(len(EMOTIONS))},
         }
 
 if __name__ == "__main__":

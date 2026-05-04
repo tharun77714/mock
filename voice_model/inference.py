@@ -12,17 +12,51 @@ from parselmouth.praat import call
 VOICE_EMOTIONS = ['angry', 'disgust', 'fearful', 'happy', 'neutral', 'sad']
 MAX_FRAMES = 94
 
-class ConvBlock(nn.Module):
-    def __init__(self, in_ch, out_ch, pool=(2, 2)):
+class VoiceConfidenceModel(nn.Module):
+    """Must match main.py exactly — same checkpoint is loaded by both."""
+    def __init__(self):
         super().__init__()
-        self.conv = nn.Sequential(
-            nn.Conv2d(in_ch, out_ch, 3, padding=1), nn.BatchNorm2d(out_ch), nn.ReLU(),
-            nn.Conv2d(out_ch, out_ch, 3, padding=1), nn.BatchNorm2d(out_ch), nn.ReLU(),
-            nn.MaxPool2d(pool), nn.Dropout2d(0.2)
+        self.cnn = nn.Sequential(
+            ConvBlock(1, 32, (2, 2)), ConvBlock(32, 64, (2, 2)),
+            ConvBlock(64, 128, (2, 1)), ConvBlock(128, 128, (2, 1))
+        )
+        self.cnn_proj = nn.Sequential(nn.Linear(1024, 256), nn.LayerNorm(256), nn.ReLU())
+        self.bilstm = nn.LSTM(256, 256, 2, batch_first=True, bidirectional=True, dropout=0.3)
+        self.attention = nn.Sequential(nn.Linear(512, 64), nn.Tanh(), nn.Linear(64, 1))
+
+        self.prosodic_encoder = nn.Sequential(
+            nn.Linear(13, 64), nn.ReLU(), nn.BatchNorm1d(64)
+        )
+        self.fusion = nn.Sequential(
+            nn.Linear(512 + 64, 256), nn.ReLU(), nn.Dropout(0.3),
+            nn.Linear(256, 128), nn.ReLU()
         )
 
-    def forward(self, x):
-        return self.conv(x)
+        head = lambda out: nn.Sequential(nn.Linear(128, 64), nn.ReLU(), nn.Linear(64, out))
+        self.head_emotion    = head(6)
+        self.head_confidence = nn.Sequential(head(1), nn.Sigmoid())
+        self.head_pitch      = nn.Sequential(head(1), nn.Sigmoid())
+        self.head_fluency    = nn.Sequential(head(1), nn.Sigmoid())
+        self.head_energy     = nn.Sequential(head(1), nn.Sigmoid())
+
+    def forward(self, mel, prosodic):
+        B = mel.shape[0]
+        x = self.cnn(mel).permute(0, 3, 1, 2).reshape(B, 23, -1)
+        x = self.cnn_proj(x)
+        lstm_out, _ = self.bilstm(x)
+        weights = torch.softmax(self.attention(lstm_out), dim=1)
+        pooled = (lstm_out * weights).sum(dim=1)
+
+        pros   = self.prosodic_encoder(prosodic)
+        shared = self.fusion(torch.cat([pooled, pros], dim=1))
+
+        return {
+            'emotion_logits': self.head_emotion(shared),
+            'confidence':     self.head_confidence(shared).squeeze(-1),
+            'pitch':          self.head_pitch(shared).squeeze(-1),
+            'fluency':        self.head_fluency(shared).squeeze(-1),
+            'energy':         self.head_energy(shared).squeeze(-1),
+        }
 
 class VoiceConfidenceModel(nn.Module):
     def __init__(self):
@@ -107,29 +141,37 @@ class VoiceInference:
         feats.append(len(y) / sr)
         
         return (np.array(feats) - self.scaler_mean) / (self.scaler_std + 1e-9)
-
+ 
+    def infer(self, filepath: str) -> dict:
+        wav, _ = self._load_audio(filepath)
         wav = wav.to(self.device)
+
         mel = self.db_t(self.mel_t(wav))
         mel = (mel - mel.mean()) / (mel.std() + 1e-9)
-        if mel.shape[2] > 94: mel = mel[:, :, :94]
-        else: mel = F.pad(mel, (0, 94 - mel.shape[2]))
-        
-        prosodic = torch.tensor(self.extract_prosodic(filepath), dtype=torch.float32).unsqueeze(0).to(self.device)
-        
+        if mel.shape[2] > MAX_FRAMES:
+            mel = mel[:, :, :MAX_FRAMES]
+        else:
+            mel = F.pad(mel, (0, MAX_FRAMES - mel.shape[2]))
+
+        prosodic = torch.tensor(
+            self.extract_prosodic(filepath), dtype=torch.float32
+        ).unsqueeze(0).to(self.device)
+
         with torch.no_grad():
             preds = self.model(mel.unsqueeze(0), prosodic)
             emotion = self.classes[preds['emotion_logits'].argmax(1).item()]
             confidence = preds['confidence'].item()
-            
+
         return {'emotion': emotion, 'confidence': confidence}
 
-    def _load_audio(self, filepath):
-        import librosa
+    def _load_audio(self, filepath: str):
         y, sr = librosa.load(filepath, sr=16000, mono=True)
-        return torch.from_numpy(y).unsqueeze(0), 1600
+        return torch.from_numpy(y).unsqueeze(0), sr
+
 
 if __name__ == "__main__":
-    MODEL_PATH = 'best_model.pth'
+    MODEL_PATH = 'voice_confidence.pth'
     if os.path.exists(MODEL_PATH):
         inference = VoiceInference(MODEL_PATH)
-        print("Model loaded.")
+        print("Model loaded successfully.")
+

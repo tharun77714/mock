@@ -45,20 +45,20 @@ def extract_text(file_path, reader):
 # NORMALIZATION
 # -------------------------
 def normalize_text(text):
+    import re
     replacements = {
-        "machine learning algorithms": "machine learning",
-        "python for data science": "python",
-        "deep neural networks": "deep learning",
-        "rest apis": "rest api",
-        "nodejs": "node.js",
-        "implementin": "implementing",
-        "al": "ai",
-        "ml": "machine learning"
+        r"\bmachine learning algorithms\b": "machine learning",
+        r"\bpython for data science\b": "python",
+        r"\bdeep neural networks\b": "deep learning",
+        r"\brest apis\b": "rest api",
+        r"\bnodejs\b": "node.js",
+        r"\bimplementin\b": "implementing",
+        r"\bal\b": "ai",
+        r"\bml\b": "machine learning",
     }
-    for k, v in replacements.items():
-        text = text.replace(k, v)
+    for pattern, replacement in replacements.items():
+        text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
     return text
-
 
 # -------------------------
 # EXPERIENCE EXTRACTION

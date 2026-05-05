@@ -186,11 +186,12 @@ class ConvBlock(nn.Module):
     def forward(self, x):
         return self.conv(x)
 
-
 class VoiceConfidenceModel(nn.Module):
-    """Blended architecture v2:
-    CNN+BiLSTM → emotion_probs (6, soft) + prosodic_enc (32) → Blend MLP → confidence (1)
-    Emotion is auxiliary — shapes the backbone, not the sole confidence source.
+    """
+    Architecture that matches the saved voice_confidence.pth checkpoint.
+    Key differences from naive re-implementation:
+      - head_emotion takes the 128-dim *fused* vector (not the 512-dim pooled LSTM output)
+      - prosodic_encoder uses LayerNorm instead of BatchNorm1d so batch_size=1 works at inference
     """
     def __init__(self):
         super().__init__()
@@ -199,18 +200,22 @@ class VoiceConfidenceModel(nn.Module):
             ConvBlock(64, 128, (2, 1)), ConvBlock(128, 128, (2, 1))
         )
         self.cnn_proj = nn.Sequential(nn.Linear(1024, 256), nn.LayerNorm(256), nn.ReLU())
-        self.bilstm = nn.LSTM(256, 256, 2, batch_first=True, bidirectional=True, dropout=0.3)
+        self.bilstm   = nn.LSTM(256, 256, 2, batch_first=True, bidirectional=True, dropout=0.3)
         self.attention = nn.Sequential(nn.Linear(512, 64), nn.Tanh(), nn.Linear(64, 1))
-        # Auxiliary emotion head (6 emotions)
-        self.emotion_head = nn.Sequential(nn.Linear(512, 64), nn.ReLU(), nn.Linear(64, 6))
-        # Prosodic encoder
-        self.prosodic_enc = nn.Sequential(nn.Linear(13, 32), nn.ReLU(), nn.BatchNorm1d(32))
-        # Blend MLP: emotion_probs(6) + prosodic(32) → confidence(1)
-        self.blend = nn.Sequential(
-            nn.Linear(6 + 32, 64), nn.ReLU(), nn.Dropout(0.3),
-            nn.Linear(64, 32), nn.ReLU(),
-            nn.Linear(32, 1), nn.Sigmoid()
+        # prosodic_encoder: LayerNorm works with batch_size=1 unlike BatchNorm1d
+        self.prosodic_encoder = nn.Sequential(nn.Linear(13, 64), nn.ReLU(), nn.LayerNorm(64))
+        self.fusion = nn.Sequential(
+            nn.Linear(512 + 64, 256), nn.ReLU(), nn.Dropout(0.3), nn.Linear(256, 128), nn.ReLU()
         )
+        # head_emotion reads from the 128-dim fused vector (matches checkpoint shape [64, 128])
+        self.head_emotion = nn.Sequential(nn.Linear(128, 64), nn.ReLU(), nn.Linear(64, 6))
+        # Double-nested Sequential preserves checkpoint key paths: head_confidence.0.0.weight etc.
+        def _head():
+            return nn.Sequential(nn.Sequential(nn.Linear(128, 64), nn.ReLU(), nn.Linear(64, 1), nn.Sigmoid()))
+        self.head_confidence = _head()
+        self.head_pitch      = _head()
+        self.head_fluency    = _head()
+        self.head_energy     = _head()
 
     def forward(self, mel, prosodic):
         B = mel.shape[0]
@@ -218,12 +223,22 @@ class VoiceConfidenceModel(nn.Module):
         x = self.cnn_proj(x)
         lstm_out, _ = self.bilstm(x)
         weights = torch.softmax(self.attention(lstm_out), dim=1)
-        pooled = (lstm_out * weights).sum(dim=1)
-        emotion_logits = self.emotion_head(pooled)
-        emotion_probs  = torch.softmax(emotion_logits, dim=1)
-        pros = self.prosodic_enc(prosodic)
-        confidence = self.blend(torch.cat([emotion_probs, pros], dim=1)).squeeze(-1)
-        return {'emotion_logits': emotion_logits, 'confidence': confidence}
+        pooled  = (lstm_out * weights).sum(dim=1)
+        pros    = self.prosodic_encoder(prosodic)
+        fused   = self.fusion(torch.cat([pooled, pros], dim=1))
+        # head_emotion runs on fused (128-dim) — matches checkpoint weights
+        emotion_logits = self.head_emotion(fused)
+        confidence = self.head_confidence(fused).squeeze(-1)
+        pitch      = self.head_pitch(fused).squeeze(-1)
+        fluency    = self.head_fluency(fused).squeeze(-1)
+        energy     = self.head_energy(fused).squeeze(-1)
+        return {
+            'emotion_logits': emotion_logits,
+            'confidence': confidence,
+            'pitch': pitch,
+            'fluency': fluency,
+            'energy': energy,
+        }
 
 
 voice_model = None
@@ -234,12 +249,17 @@ _voice_model_error: str = ""
 try:
     ckpt = torch.load(VOICE_MODEL_PATH, map_location=device, weights_only=False)
     voice_model = VoiceConfidenceModel().to(device)
-    voice_model.load_state_dict(ckpt['model'])
+    # strict=False: tolerate BN→LN key rename (running_mean/var no longer exist)
+    missing, unexpected = voice_model.load_state_dict(ckpt['model'], strict=False)
+    if missing:
+        print(f"[Voice Model] Missing keys (expected after BN→LN migration): {missing}")
+    if unexpected:
+        print(f"[Voice Model] Unexpected keys in checkpoint (will be ignored): {unexpected}")
     voice_model.eval()
     voice_label_encoder = ckpt.get('label_encoder', VOICE_EMOTIONS)
     voice_scaler_mean = np.array(ckpt['scaler_mean']) if 'scaler_mean' in ckpt else None
     voice_scaler_std  = np.array(ckpt['scaler_std'])  if 'scaler_std'  in ckpt else None
-    print(f"[OK] VoiceConfidenceModel (blended v2) loaded from {VOICE_MODEL_PATH}")
+    print(f"[OK] VoiceConfidenceModel loaded from {VOICE_MODEL_PATH}")
 except FileNotFoundError:
     _voice_model_error = f"Model file not found: {VOICE_MODEL_PATH}"
     print(f"[ERROR] {_voice_model_error}")
@@ -464,15 +484,10 @@ def run_voice_model(audio_path: str) -> Optional[dict]:
         emotion_idx  = int(torch.argmax(out['emotion_logits'], dim=1).item())
         emotion_name = voice_label_encoder[emotion_idx] if voice_label_encoder else VOICE_EMOTIONS[emotion_idx]
 
-        # Single blended confidence score (primary output)
-        confidence = round(float(out['confidence'].item()), 3)
-
-        # Derive pitch / fluency / energy directly from raw prosodic features
-        # so the frontend API contract stays identical
-        raw = prosodic_list  # unscaled values
-        pitch_score   = round(float(np.clip(raw[3], 0, 1)), 3)                      # pitch_stability
-        fluency_score = round(float(np.clip(1.0 - raw[11], 0, 1)), 3)              # 1 - silence_ratio
-        energy_score  = round(float(np.clip(raw[7] / 0.08, 0, 1)), 3)             # energy_mean normalised
+        confidence    = round(float(out['confidence'].item()), 3)
+        pitch_score   = round(float(out['pitch'].item()), 3)
+        fluency_score = round(float(out['fluency'].item()), 3)
+        energy_score  = round(float(out['energy'].item()), 3)           # energy_mean normalised
 
         # Blend model confidence with prosody when the net outputs ~0 but audio is clearly voiced
         if confidence < 0.12:
@@ -640,9 +655,10 @@ def _llm_chat(messages: list, temperature: float = 0.5) -> Optional[str]:
 # JSON cleaning helper — strips markdown fences, extracts first JSON object
 # ---------------------------------------------------------------------------
 def clean_llm_json(raw: str) -> dict:
-    """Strip markdown fences and extract the first valid JSON object."""
+    """Strip markdown fences, repair common LLM JSON mistakes, then parse."""
     import re as _re
     raw = raw.strip()
+    # Strip markdown code fences
     raw = _re.sub(r'^```[a-zA-Z]*\s*', '', raw, flags=_re.IGNORECASE)
     raw = _re.sub(r'\s*```$', '', raw, flags=_re.IGNORECASE)
     raw = raw.strip()
@@ -650,7 +666,23 @@ def clean_llm_json(raw: str) -> dict:
     end   = raw.rfind("}") + 1
     if start == -1 or end <= start:
         raise ValueError("No JSON object found in LLM response")
-    return json.loads(raw[start:end])
+    candidate = raw[start:end]
+
+    def _repair(s: str) -> str:
+        # 1. Remove trailing commas before ] or }
+        s = _re.sub(r',\s*([}\]])', r'\1', s)
+        # 2. Insert missing comma between } or ] and the next key/value
+        #    e.g.  }"next"  →  },"next"   and  ]"next"  →  ],"next"
+        s = _re.sub(r'([}\]])\s*(")', r'\1, \2', s)
+        # 3. Collapse bare newlines inside strings (LLM multi-line tip strings)
+        s = _re.sub(r'(?<!\\)\n', ' ', s)
+        return s
+
+    try:
+        return json.loads(candidate)
+    except json.JSONDecodeError:
+        candidate = _repair(candidate)
+        return json.loads(candidate)
 
 
 def sanitize_user_text(text: str, max_len: int = 4000) -> str:

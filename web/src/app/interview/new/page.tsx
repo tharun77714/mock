@@ -738,16 +738,16 @@ export default function InterviewPage() {
                   >
                     <span
                       className={`text-[10px] font-bold uppercase tracking-widest ${msg.role === "interviewer"
-                          ? "text-indigo-400"
-                          : "text-emerald-400"
+                        ? "text-indigo-400"
+                        : "text-emerald-400"
                         }`}
                     >
                       {msg.role === "interviewer" ? "Interviewer" : "You"}
                     </span>
                     <p
                       className={`px-3 py-2 rounded-2xl max-w-[85%] ${msg.role === "interviewer"
-                          ? "bg-slate-800/80 text-slate-300"
-                          : "bg-indigo-600/20 text-slate-300"
+                        ? "bg-slate-800/80 text-slate-300"
+                        : "bg-indigo-600/20 text-slate-300"
                         }`}
                     >
                       {msg.text}
@@ -805,3 +805,4 @@ export default function InterviewPage() {
     </main>
   );
 }
+

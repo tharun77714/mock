@@ -1,30 +1,16 @@
 import { NextResponse } from "next/server";
+import { getServerSession } from "next-auth/next";
+import { authOptions } from "@/lib/auth";
 import type { ResumeDocument } from "@/lib/resume-builder-schema";
 
 const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
 const SUPPORTED_TEMPLATES = ["classic", "modern", "minimal", "professional"] as const;
 const SUPPORTED_FONTS = [
-  "Inter",
-  "Roboto",
-  "Merriweather",
-  "Lora",
-  "Outfit",
-  "Source Sans 3",
-  "Playfair Display",
+  "Inter", "Roboto", "Merriweather", "Lora", "Outfit", "Source Sans 3", "Playfair Display",
 ] as const;
 const SUPPORTED_ACCENTS = [
-  "#6366f1",
-  "#8b5cf6",
-  "#ec4899",
-  "#ef4444",
-  "#f97316",
-  "#eab308",
-  "#22c55e",
-  "#14b8a6",
-  "#06b6d4",
-  "#3b82f6",
-  "#64748b",
-  "#0f172a",
+  "#6366f1", "#8b5cf6", "#ec4899", "#ef4444", "#f97316",
+  "#eab308", "#22c55e", "#14b8a6", "#06b6d4", "#3b82f6", "#64748b", "#0f172a",
 ] as const;
 
 type SupportedTemplate = (typeof SUPPORTED_TEMPLATES)[number];
@@ -54,31 +40,18 @@ function normalizeMetadata(
   current: ResumeDocument["metadata"],
   proposed?: EnhanceResponse["metadata"]
 ) {
-  const templateCandidate = proposed?.template;
-  const fontCandidate = proposed?.fontFamily;
-  const accentCandidate = proposed?.accentColor;
-
   const template: ResumeDocument["metadata"]["template"] =
-    templateCandidate && SUPPORTED_TEMPLATES.includes(templateCandidate)
-      ? templateCandidate
-      : current.template;
+    proposed?.template && SUPPORTED_TEMPLATES.includes(proposed.template)
+      ? proposed.template : current.template;
   const fontFamily: ResumeDocument["metadata"]["fontFamily"] =
-    fontCandidate && SUPPORTED_FONTS.includes(fontCandidate)
-      ? fontCandidate
-      : current.fontFamily;
+    proposed?.fontFamily && SUPPORTED_FONTS.includes(proposed.fontFamily)
+      ? proposed.fontFamily : current.fontFamily;
   const accentColor: ResumeDocument["metadata"]["accentColor"] =
-    accentCandidate &&
-    SUPPORTED_ACCENTS.includes(
-      accentCandidate as (typeof SUPPORTED_ACCENTS)[number]
-    )
-      ? accentCandidate
-      : current.accentColor;
-
+    proposed?.accentColor &&
+      SUPPORTED_ACCENTS.includes(proposed.accentColor as (typeof SUPPORTED_ACCENTS)[number])
+      ? proposed.accentColor : current.accentColor;
   return {
-    ...current,
-    template,
-    fontFamily,
-    accentColor,
+    ...current, template, fontFamily, accentColor,
     fontSize: clampFontSize(proposed?.fontSize, current.fontSize),
   };
 }
@@ -93,7 +66,6 @@ Rules:
 - Keep dates and names unchanged.
 - Improve grammar, tone, and action verbs.
 - Keep concise bullet points.
-- Keep the same overall resume content input; only improve phrasing and recommend better visual styling.
 - Choose only from these templates: ${SUPPORTED_TEMPLATES.join(", ")}.
 - Choose only from these fonts: ${SUPPORTED_FONTS.join(", ")}.
 - Choose only from these accent colors: ${SUPPORTED_ACCENTS.join(", ")}.
@@ -121,14 +93,17 @@ ${JSON.stringify(resume)}
 }
 
 export async function POST(req: Request) {
+  // ── Auth guard ──────────────────────────────────────────────────
+  const session = await getServerSession(authOptions);
+  if (!session) {
+    return NextResponse.json({ success: false, error: "Unauthorized" }, { status: 401 });
+  }
+
   try {
     const apiKey = process.env.GROQ_API_KEY?.trim();
     const model = process.env.GROQ_MODEL || "llama-3.3-70b-versatile";
     if (!apiKey) {
-      return NextResponse.json(
-        { success: false, error: "Missing GROQ_API_KEY in environment." },
-        { status: 500 }
-      );
+      return NextResponse.json({ success: false, error: "Missing GROQ_API_KEY in environment." }, { status: 500 });
     }
 
     const body = await req.json();
@@ -139,42 +114,30 @@ export async function POST(req: Request) {
 
     const response = await fetch(GROQ_URL, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
       body: JSON.stringify({
         model,
         temperature: 0.3,
         response_format: { type: "json_object" },
         messages: [
-          {
-            role: "system",
-            content: "You return only valid JSON, no markdown, no extra text.",
-          },
-          {
-            role: "user",
-            content: buildPrompt(resume),
-          },
+          { role: "system", content: "You return only valid JSON, no markdown, no extra text." },
+          { role: "user", content: buildPrompt(resume) },
         ],
       }),
     });
 
     const data = await response.json();
     if (!response.ok) {
-      const errMsg =
-        data?.error?.code === "invalid_api_key"
-          ? "Groq rejected the configured API key. Update GROQ_API_KEY in web/.env.local and restart the Next.js server."
-          : data?.error?.message || "Groq request failed";
+      const errMsg = data?.error?.code === "invalid_api_key"
+        ? "Groq rejected the configured API key."
+        : data?.error?.message || "Groq request failed";
       return NextResponse.json({ success: false, error: errMsg }, { status: 500 });
     }
 
     const raw = data?.choices?.[0]?.message?.content;
-    if (!raw) {
-      return NextResponse.json({ success: false, error: "No content from Groq." }, { status: 500 });
-    }
+    if (!raw) return NextResponse.json({ success: false, error: "No content from Groq." }, { status: 500 });
 
-    const safeRaw = String(raw).trim().replace(/^```json\s*|\s*```$/g, "");
+    const safeRaw = String(raw).trim().replace(/^```[a-zA-Z]*\s*|\s*```$/gi, "");
     const enhanced = JSON.parse(safeRaw) as EnhanceResponse;
 
     const merged: ResumeDocument = {
@@ -192,11 +155,7 @@ export async function POST(req: Request) {
       metadata: normalizeMetadata(resume.metadata, enhanced.metadata),
     };
 
-    return NextResponse.json({
-      success: true,
-      resume: merged,
-      designNotes: enhanced.designNotes || null,
-    });
+    return NextResponse.json({ success: true, resume: merged, designNotes: enhanced.designNotes || null });
   } catch (error) {
     console.error("resume-enhance:", error);
     return NextResponse.json({ success: false, error: "Failed to enhance resume." }, { status: 500 });

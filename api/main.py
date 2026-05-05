@@ -636,6 +636,23 @@ def _llm_chat(messages: list, temperature: float = 0.5) -> Optional[str]:
             print(f"[LLM] Gemini failed: {e}")
     return None
 
+# ---------------------------------------------------------------------------
+# JSON cleaning helper — strips markdown fences, extracts first JSON object
+# ---------------------------------------------------------------------------
+def clean_llm_json(raw: str) -> dict:
+    """Strip markdown fences and extract the first valid JSON object."""
+    import re as _re
+    raw = raw.strip()
+    raw = _re.sub(r'^```[a-zA-Z]*\s*', '', raw, flags=_re.IGNORECASE)
+    raw = _re.sub(r'\s*```$', '', raw, flags=_re.IGNORECASE)
+    raw = raw.strip()
+    start = raw.find("{")
+    end   = raw.rfind("}") + 1
+    if start == -1 or end <= start:
+        raise ValueError("No JSON object found in LLM response")
+    return json.loads(raw[start:end])
+
+
 def sanitize_user_text(text: str, max_len: int = 4000) -> str:
     if not text:
         return ""
@@ -763,19 +780,16 @@ Rules:
             temperature=0.45,
         )
         if text:
-            start = text.find("{")
-            end   = text.rfind("}") + 1
-            if start != -1 and end > start:
-                result = json.loads(text[start:end])
-                # Validate shape
-                for key in ("delivery", "non_verbal", "clarity", "content_quality"):
+            result = clean_llm_json(text)
+            # Validate shape
+            for key in ("delivery", "non_verbal", "clarity", "content_quality"):
                     if key not in result:
                         raise ValueError(f"Missing key: {key}")
-                print(f"[BehavioralCoaching] scores: delivery={result['delivery']['score']} "
+            print(f"[BehavioralCoaching] scores: delivery={result['delivery']['score']} "
                       f"non_verbal={result['non_verbal']['score']} "
                       f"clarity={result['clarity']['score']} "
                       f"content={result['content_quality']['score']}")
-                return result
+            return result
     except Exception as e:
         print(f"[BehavioralCoaching LLM] Error: {e}")
 
@@ -912,13 +926,9 @@ No markdown, only raw JSON."""
             temperature=0.45,
         )
         if text:
-            start = text.find("{")
-            end = text.rfind("}") + 1
-            if start != -1 and end > start:
-                coaching = json.loads(text[start:end])
-                print(f"[Transcript coaching] English level: {coaching.get('english_level')} "
-                      f"score: {coaching.get('overall_language_score')}")
-                return coaching
+            coaching = clean_llm_json(text)
+            print(f"[Transcript coaching] English level: {coaching.get('english_level')}")
+            return coaching
     except Exception as e:
         print(f"[Transcript coaching LLM] Error: {e}")
 
@@ -1422,11 +1432,7 @@ class InterviewContextRequest(BaseModel):
 
 
 def _parse_json_object_from_text(raw_text: str) -> dict:
-    json_start = raw_text.find("{")
-    json_end = raw_text.rfind("}") + 1
-    if json_start == -1 or json_end <= json_start:
-        raise ValueError("No JSON object in model response")
-    return json.loads(raw_text[json_start:json_end])
+    return clean_llm_json(raw_text)
 
 
 def _generate_interview_context_with_llm(prompt: str) -> dict:
